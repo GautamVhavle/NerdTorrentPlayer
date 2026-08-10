@@ -35,6 +35,17 @@ export interface TorrentMeta {
   length: number;
 }
 
+export type TrackerStatus = "connecting" | "responding" | "degraded";
+
+export interface TrackerDiagnostic {
+  url: string;
+  status: TrackerStatus;
+  announces: number;
+  lastAnnounceAt: number | null;
+  seeders: number | null;
+  leechers: number | null;
+}
+
 export interface TorrentMetrics {
   peers: number;
   downloadSpeed: number;
@@ -42,6 +53,31 @@ export interface TorrentMetrics {
   progress: number;
   downloaded: number;
   uploaded: number;
+  /** Bytes received from peers, including data that did not verify. */
+  received?: number;
+  ratio?: number;
+  timeRemaining?: number | null;
+  selectedFileProgress?: number | null;
+  selectedFileDownloaded?: number | null;
+  connectedWebRtcPeers?: number;
+  connectedWebSeeds?: number;
+  activeDownloadPeers?: number;
+  unchokedPeers?: number;
+  trackerCount?: number;
+  responsiveTrackers?: number;
+  trackerAnnounces?: number;
+  trackerWarnings?: number;
+  recoverableWebRtcErrors?: number;
+  publicTrackerFallbacks?: boolean;
+  reannounceAttempts?: number;
+  peakDownloadSpeed?: number;
+  timeToMetadataMs?: number | null;
+  timeToFirstPeerMs?: number | null;
+  timeToFirstByteMs?: number | null;
+  stalledForMs?: number;
+  pieceLength?: number | null;
+  lastWarning?: string | null;
+  trackers?: TrackerDiagnostic[];
 }
 
 export interface StreamSource {
@@ -55,11 +91,49 @@ export interface RuntimeTorrentFile {
   path: string;
   length: number;
   type?: string;
+  downloaded?: number;
   progress?: number;
   streamURL: string;
   blob(options?: { start?: number; end?: number }): Promise<Blob>;
-  select?(): void;
+  select?(priority?: number): void;
   deselect?(): void;
+}
+
+export interface RuntimeWire {
+  type?: string;
+  peerChoking?: boolean;
+  downloaded?: number;
+  uploaded?: number;
+  downloadSpeed?(): number;
+  uploadSpeed?(): number;
+  on?(event: string, listener: (...args: unknown[]) => void): this;
+  once?(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+export interface RuntimeTrackerUpdate {
+  announce?: string;
+  complete?: number;
+  incomplete?: number;
+}
+
+export interface RuntimeTrackerClient {
+  destroyed?: boolean;
+  update(options?: {
+    uploaded?: number;
+    downloaded?: number;
+    left?: number;
+    numwant?: number;
+  }): void;
+  on(event: string, listener: (...args: unknown[]) => void): this;
+  off?(event: string, listener: (...args: unknown[]) => void): this;
+  removeListener?(event: string, listener: (...args: unknown[]) => void): this;
+}
+
+export interface RuntimeParsedTorrent {
+  infoHash: string;
+  private?: boolean;
+  announce?: string[];
+  [key: string]: unknown;
 }
 
 export interface RuntimeTorrent {
@@ -73,19 +147,31 @@ export interface RuntimeTorrent {
   uploadSpeed: number;
   numPeers: number;
   files: RuntimeTorrentFile[];
+  announce?: string[];
+  pieceLength?: number;
+  received?: number;
+  ratio?: number;
+  timeRemaining?: number;
+  ready?: boolean;
+  done?: boolean;
+  destroyed?: boolean;
+  wires?: RuntimeWire[];
+  discovery?: { tracker?: RuntimeTrackerClient | null } | null;
   on(event: string, listener: (...args: unknown[]) => void): this;
   off?(event: string, listener: (...args: unknown[]) => void): this;
 }
 
 export interface RuntimeWebTorrentClient {
   add(
-    torrentId: string | Uint8Array,
+    torrentId: string | Uint8Array | RuntimeParsedTorrent,
     options: {
       announce: string[];
       deselect?: boolean;
       strategy?: "sequential" | "rarest";
       destroyStoreOnDestroy?: boolean;
       noPeersIntervalTime?: number;
+      maxWebConns?: number;
+      storeCacheSlots?: number;
     },
     callback: (torrent: RuntimeTorrent) => void,
   ): RuntimeTorrent;

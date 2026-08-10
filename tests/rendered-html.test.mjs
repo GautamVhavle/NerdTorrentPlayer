@@ -8,11 +8,11 @@ async function render() {
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("https://torrent-exe.test/", {
+    new Request("https://nerdtorrentplayer.test/", {
       headers: {
         accept: "text/html",
-        host: "torrent-exe.test",
-        "x-forwarded-host": "torrent-exe.test",
+        host: "nerdtorrentplayer.test",
+        "x-forwarded-host": "nerdtorrentplayer.test",
         "x-forwarded-proto": "https",
       },
     }),
@@ -34,14 +34,18 @@ test("server-renders the finished torrent player landing screen", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>TORRENT\.EXE — Stream the Swarm<\/title>/i);
+  assert.match(html, /<title>NerdTorrentPlayer — Stream the Swarm<\/title>/i);
   assert.match(html, /STREAM/);
   assert.match(html, /THE SWARM/);
-  assert.match(html, /Magnet link/);
-  assert.match(html, /Connect to swarm/);
-  assert.match(html, /Drop a \.torrent file here/);
+  assert.match(html, /Magnet URI/);
+  assert.match(html, /Initialize swarm/);
+  assert.match(html, /Try Sintel demo/);
+  assert.match(html, /Drop a \.torrent manifest/);
   assert.match(html, /WebTorrent\s*\/\s*WebRTC peers only/i);
-  assert.match(html, /https:\/\/torrent-exe\.test\/og\.png/);
+  assert.match(html, /Save this source in my private on-device library/i);
+  assert.match(html, /Built with love/i);
+  assert.match(html, /href="http:\/\/gautamvhavle\.xyz\/"/i);
+  assert.match(html, /https:\/\/nerdtorrentplayer\.test\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|taking shape/i);
 });
 
@@ -70,7 +74,7 @@ test("ships the WebTorrent streaming bridge and branded social card", async () =
   assert.equal(sourceCardStat.size, builtCardStat.size);
 });
 
-test("keeps WebTorrent browser-only and removes starter dependencies", async () => {
+test("keeps WebTorrent browser-only and ships the optimized UI dependencies", async () => {
   const [clientSource, packageJson, page] = await Promise.all([
     readFile(
       new URL("../src/torrent/torrent-client.ts", import.meta.url),
@@ -85,7 +89,7 @@ test("keeps WebTorrent browser-only and removes starter dependencies", async () 
   assert.match(clientSource, /createServer/);
   assert.match(clientSource, /deselect:\s*true/);
   assert.match(page, /TorrentPlayerApp/);
+  assert.match(packageJson, /"motion"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(page, /_sites-preview|codex-preview/);
 });
-

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 const description =
-  "A private, browser-only WebTorrent player with file selection, custom controls, subtitles, sync tools, and resume support.";
+  "A fast-start browser WebTorrent player with an on-device library, advanced swarm telemetry, subtitles, sync tools, and resume support.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -38,9 +38,9 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: new URL(origin),
-    title: "TORRENT.EXE — Stream the Swarm",
+    title: "NerdTorrentPlayer — Stream the Swarm",
     description,
-    applicationName: "TORRENT.EXE",
+    applicationName: "NerdTorrentPlayer",
     manifest: "/manifest.webmanifest",
     keywords: [
       "WebTorrent",
@@ -56,21 +56,21 @@ export async function generateMetadata(): Promise<Metadata> {
     openGraph: {
       type: "website",
       url: origin,
-      siteName: "TORRENT.EXE",
-      title: "TORRENT.EXE — Stream the Swarm",
+      siteName: "NerdTorrentPlayer",
+      title: "NerdTorrentPlayer — Stream the Swarm",
       description,
       images: [
         {
           url: origin + "/og.png",
           width: 1731,
           height: 909,
-          alt: "TORRENT.EXE — Stream the Swarm",
+          alt: "NerdTorrentPlayer — Stream the Swarm",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: "TORRENT.EXE — Stream the Swarm",
+      title: "NerdTorrentPlayer — Stream the Swarm",
       description,
       images: [origin + "/og.png"],
     },

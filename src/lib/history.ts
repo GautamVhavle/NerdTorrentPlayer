@@ -1,3 +1,10 @@
+import {
+  openLocalDatabase,
+  requestResult,
+  RESUME_STORE_NAME,
+  transactionFinished,
+} from "./library";
+
 export interface ResumeRecord {
   id: string;
   infoHash: string;
@@ -10,106 +17,143 @@ export interface ResumeRecord {
   lastOpenedAt: number;
 }
 
-const DATABASE_NAME = "torrent-exe";
-const DATABASE_VERSION = 1;
-const STORE_NAME = "resume";
+const MAX_RESUME_RECORDS = 20;
+const memoryResume = new Map<string, ResumeRecord>();
+const deletedResumeIds = new Set<string>();
 
-function openDatabase(): Promise<IDBDatabase | null> {
-  if (typeof indexedDB === "undefined") return Promise.resolve(null);
-
-  return new Promise((resolve) => {
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        const store = database.createObjectStore(STORE_NAME, {
-          keyPath: "id",
-        });
-        store.createIndex("lastOpenedAt", "lastOpenedAt");
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => resolve(null);
-  });
+function safeResumeRecord(record: ResumeRecord): ResumeRecord | null {
+  if (!record || typeof record.id !== "string") return null;
+  const infoHash = String(record.infoHash || "").trim().toLowerCase();
+  const filePath = String(record.filePath || "").slice(0, 2_048);
+  if (!infoHash || !filePath) return null;
+  const id = infoHash + ":" + filePath;
+  const finite = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return {
+    id,
+    infoHash,
+    torrentName: String(record.torrentName || "Untitled torrent").slice(0, 240),
+    filePath,
+    fileName: String(record.fileName || filePath).slice(0, 512),
+    position: Math.max(0, finite(record.position)),
+    duration: Math.max(0, finite(record.duration)),
+    subtitleOffset: Math.max(-30, Math.min(30, finite(record.subtitleOffset))),
+    lastOpenedAt: Math.max(0, finite(record.lastOpenedAt)) || Date.now(),
+  };
 }
 
-function requestResult<T>(request: IDBRequest<T>): Promise<T | null> {
-  return new Promise((resolve) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => resolve(null);
-  });
+async function persistedResumeRecords(): Promise<ResumeRecord[] | null> {
+  const database = await openLocalDatabase();
+  if (!database || !database.objectStoreNames.contains(RESUME_STORE_NAME)) {
+    return null;
+  }
+  try {
+    const transaction = database.transaction(RESUME_STORE_NAME, "readonly");
+    return await requestResult<ResumeRecord[]>(
+      transaction.objectStore(RESUME_STORE_NAME).getAll(),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function mergedResumeRecords(): Promise<ResumeRecord[]> {
+  const persisted = (await persistedResumeRecords()) || [];
+  const merged = new Map<string, ResumeRecord>();
+  for (const candidate of persisted) {
+    const record = safeResumeRecord(candidate);
+    if (record && !deletedResumeIds.has(record.id)) merged.set(record.id, record);
+  }
+  for (const candidate of memoryResume.values()) {
+    const record = safeResumeRecord(candidate);
+    if (record && !deletedResumeIds.has(record.id)) merged.set(record.id, record);
+  }
+  return [...merged.values()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
 }
 
 export async function listResumeRecords(): Promise<ResumeRecord[]> {
-  const database = await openDatabase();
-  if (!database) return [];
-  const transaction = database.transaction(STORE_NAME, "readonly");
-  const records =
-    (await requestResult(
-      transaction.objectStore(STORE_NAME).getAll(),
-    )) || [];
-  database.close();
-  return records
-    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
-    .slice(0, 20);
+  return (await mergedResumeRecords()).slice(0, MAX_RESUME_RECORDS);
 }
 
 export async function getResumeRecord(
   infoHash: string,
   filePath: string,
 ): Promise<ResumeRecord | null> {
-  const database = await openDatabase();
-  if (!database) return null;
-  const transaction = database.transaction(STORE_NAME, "readonly");
-  const record = await requestResult<ResumeRecord>(
-    transaction.objectStore(STORE_NAME).get(infoHash + ":" + filePath),
-  );
-  database.close();
-  return record;
+  const id = infoHash.trim().toLowerCase() + ":" + filePath;
+  if (deletedResumeIds.has(id)) return null;
+  const fallback = memoryResume.get(id);
+  if (fallback) return { ...fallback };
+
+  const database = await openLocalDatabase();
+  if (!database || !database.objectStoreNames.contains(RESUME_STORE_NAME)) {
+    return null;
+  }
+  try {
+    const transaction = database.transaction(RESUME_STORE_NAME, "readonly");
+    const result = await requestResult<ResumeRecord>(
+      transaction.objectStore(RESUME_STORE_NAME).get(id),
+    );
+    return result ? safeResumeRecord(result) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveResumeRecord(record: ResumeRecord): Promise<void> {
-  const database = await openDatabase();
-  if (!database) return;
-
-  await new Promise<void>((resolve) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(record);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => resolve();
-  });
-
-  const records = await new Promise<ResumeRecord[]>((resolve) => {
-    const transaction = database.transaction(STORE_NAME, "readonly");
-    const request = transaction.objectStore(STORE_NAME).getAll();
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => resolve([]);
-  });
-
-  const overflow = records
-    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
-    .slice(20);
-  if (overflow.length) {
-    await new Promise<void>((resolve) => {
-      const transaction = database.transaction(STORE_NAME, "readwrite");
-      const store = transaction.objectStore(STORE_NAME);
-      overflow.forEach((item) => store.delete(item.id));
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => resolve();
-    });
+  const safe = safeResumeRecord(record);
+  if (!safe) return;
+  const database = await openLocalDatabase();
+  let persisted = false;
+  if (database && database.objectStoreNames.contains(RESUME_STORE_NAME)) {
+    try {
+      const transaction = database.transaction(RESUME_STORE_NAME, "readwrite");
+      transaction.objectStore(RESUME_STORE_NAME).put(safe);
+      persisted = await transactionFinished(transaction);
+    } catch {
+      persisted = false;
+    }
   }
-  database.close();
+  deletedResumeIds.delete(safe.id);
+  if (persisted) memoryResume.delete(safe.id);
+  else memoryResume.set(safe.id, safe);
+
+  const overflow = (await mergedResumeRecords()).slice(MAX_RESUME_RECORDS);
+  if (overflow.length) {
+    await Promise.all(overflow.map((item) => deleteResumeRecord(item.id)));
+  }
+}
+
+async function deleteResumeRecord(id: string): Promise<void> {
+  memoryResume.delete(id);
+  const database = await openLocalDatabase();
+  let persisted = false;
+  if (database && database.objectStoreNames.contains(RESUME_STORE_NAME)) {
+    try {
+      const transaction = database.transaction(RESUME_STORE_NAME, "readwrite");
+      transaction.objectStore(RESUME_STORE_NAME).delete(id);
+      persisted = await transactionFinished(transaction);
+    } catch {
+      persisted = false;
+    }
+  }
+  if (persisted) deletedResumeIds.delete(id);
+  else deletedResumeIds.add(id);
 }
 
 export async function clearResumeRecords(): Promise<void> {
-  const database = await openDatabase();
-  if (!database) return;
-  await new Promise<void>((resolve) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).clear();
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => resolve();
-  });
-  database.close();
+  const known = await listResumeRecords();
+  memoryResume.clear();
+  const database = await openLocalDatabase();
+  let persisted = false;
+  if (database && database.objectStoreNames.contains(RESUME_STORE_NAME)) {
+    try {
+      const transaction = database.transaction(RESUME_STORE_NAME, "readwrite");
+      transaction.objectStore(RESUME_STORE_NAME).clear();
+      persisted = await transactionFinished(transaction);
+    } catch {
+      persisted = false;
+    }
+  }
+  if (persisted) deletedResumeIds.clear();
+  else known.forEach((record) => deletedResumeIds.add(record.id));
 }
-

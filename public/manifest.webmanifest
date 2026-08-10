@@ -1,7 +1,7 @@
 {
-  "name": "TORRENT.EXE",
-  "short_name": "TORRENT.EXE",
-  "description": "Stream WebTorrent-compatible media directly in your browser.",
+  "name": "NerdTorrentPlayer",
+  "short_name": "NerdTorrent",
+  "description": "A fast-start WebTorrent media console with a private on-device library and deep swarm telemetry.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#05070a",

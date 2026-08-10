@@ -6,6 +6,7 @@ import {
   Captions,
   Controls,
   FullscreenButton,
+  MediaAnnouncer,
   MediaPlayer,
   MediaProvider,
   MuteButton,
@@ -17,7 +18,10 @@ import {
   VolumeSlider,
   useMediaRemote,
   useMediaState,
+  type MediaErrorDetail,
   type MediaPlayerInstance,
+  type MediaTimeUpdateEventDetail,
+  type MediaVolumeChange,
 } from "@vidstack/react";
 import {
   Airplay,
@@ -40,12 +44,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import {
   getResumeRecord,
   saveResumeRecord,
   type ResumeRecord,
 } from "../lib/history";
+import { updateLibraryRecord } from "../lib/library";
 import {
   subtitleToVtt,
   type SubtitleTrackModel,
@@ -54,14 +60,15 @@ import { formatSpeed } from "../torrent/torrent-files";
 import type {
   StreamSource,
   TorrentMeta,
-  TorrentMetrics,
 } from "../torrent/torrent-types";
-import type { PlayerPreferences } from "../stores/torrent-store";
+import {
+  useTorrentStore,
+  type PlayerPreferences,
+} from "../stores/torrent-store";
 
 interface RetroPlayerProps {
   stream: StreamSource;
   meta: TorrentMeta;
-  metrics: TorrentMetrics;
   subtitle: SubtitleTrackModel | null;
   subtitleOffset: number;
   preferences: PlayerPreferences;
@@ -71,13 +78,55 @@ interface RetroPlayerProps {
   onPlaybackError(message: string): void;
 }
 
+type BufferingReason = "initial" | "waiting" | "stalled" | null;
+
+const PLAYBACK_SAVE_INTERVAL_MS = 5_000;
+
+function bufferedSecondsAhead(buffered: TimeRanges, currentTime: number) {
+  try {
+    for (let index = 0; index < buffered.length; index += 1) {
+      const start = buffered.start(index);
+      const end = buffered.end(index);
+      if (currentTime >= start - 0.25 && currentTime <= end + 0.25) {
+        return Math.max(0, end - currentTime);
+      }
+    }
+  } catch {
+    // A browser can replace TimeRanges while it is being read.
+  }
+  return 0;
+}
+
+function formatBufferAhead(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return Math.floor(seconds) + "s";
+  return Math.floor(seconds / 60) + "m " + Math.floor(seconds % 60) + "s";
+}
+
+function playbackErrorMessage(detail: MediaErrorDetail) {
+  switch (detail.code) {
+    case 1:
+      return "Playback was interrupted before it finished. Press play to retry the current range.";
+    case 2:
+      return "The browser lost the local torrent stream. Keep this tab open while the swarm reconnects, then retry.";
+    case 3:
+      return "The file arrived, but this browser cannot decode its audio or video codec. Try another media file or browser.";
+    case 4:
+      return "This container or codec is not supported by the browser. NerdTorrentPlayer does not transcode media.";
+    default:
+      return (
+        detail.message ||
+        "Playback could not continue. Check the swarm and try this file again."
+      );
+  }
+}
+
 function PlayerControls({
   hasCaptions,
-  metrics,
   onPreferences,
 }: {
   hasCaptions: boolean;
-  metrics: TorrentMetrics;
   onPreferences(preferences: Partial<PlayerPreferences>): void;
 }) {
   const remote = useMediaRemote();
@@ -90,6 +139,9 @@ function PlayerControls({
   const canFullscreen = useMediaState("canFullscreen");
   const canAirPlay = useMediaState("canAirPlay");
   const playbackRate = useMediaState("playbackRate");
+  const downloadSpeed = useTorrentStore(
+    (state) => state.metrics.downloadSpeed,
+  );
 
   const cycleSpeed = () => {
     const rates = [0.75, 1, 1.25, 1.5, 2];
@@ -159,7 +211,7 @@ function PlayerControls({
         <div className="transport-cluster transport-actions">
           <span className="player-net-stat" title="Current torrent download rate">
             <i aria-hidden="true" />
-            {formatSpeed(metrics.downloadSpeed)}
+            {formatSpeed(downloadSpeed)}
           </span>
 
           <CaptionButton
@@ -236,38 +288,92 @@ function PlayerControls({
 }
 
 function PlayerStatus({
-  buffering,
-  metrics,
+  reason,
 }: {
-  buffering: boolean;
-  metrics: TorrentMetrics;
+  reason: BufferingReason;
 }) {
   const canPlay = useMediaState("canPlay");
   const paused = useMediaState("paused");
+  const seeking = useMediaState("seeking");
+  const peers = useTorrentStore((state) => state.metrics.peers);
+  const downloadSpeed = useTorrentStore(
+    (state) => state.metrics.downloadSpeed,
+  );
 
-  if (canPlay && !buffering) return null;
+  if ((canPlay && !reason && !seeking) || (canPlay && paused && !seeking)) {
+    return null;
+  }
+
+  const eyebrow = seeking
+    ? "SEEKING BYTE RANGE"
+    : !canPlay
+      ? "PRIMING STREAM"
+      : reason === "stalled"
+        ? "RANGE REQUEST STALLED"
+        : "BUFFERING PIECES";
+  const title = seeking
+    ? "Jumping to the requested pieces"
+    : !peers
+      ? "Negotiating a WebRTC route"
+      : reason === "stalled"
+        ? "Waiting on this exact byte range"
+        : !canPlay
+          ? "Building the first playable buffer"
+          : "Fetching the next contiguous pieces";
+  const recovery = peers
+    ? "Playback resumes automatically when the range is ready."
+    : "No connected peer is serving this range yet; discovery stays active.";
 
   return (
-    <div className="player-status-overlay" role="status" aria-live="polite">
+    <div
+      className="player-status-overlay"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
       <div className="pixel-loader" aria-hidden="true">
         <span />
         <span />
         <span />
         <span />
       </div>
-      <span className="eyebrow">
-        {!canPlay ? "PREPARING STREAM" : "BUFFERING PIECES"}
-      </span>
-      <strong>
-        {metrics.peers
-          ? "Waiting for the next pieces"
-          : "Searching the swarm"}
-      </strong>
+      <span className="eyebrow">{eyebrow}</span>
+      <strong>{title}</strong>
       <p>
-        {metrics.peers} peer{metrics.peers === 1 ? "" : "s"} ·{" "}
-        {formatSpeed(metrics.downloadSpeed)}
-        {paused && canPlay ? " · Playback paused" : ""}
+        {peers} peer{peers === 1 ? "" : "s"} · {formatSpeed(downloadSpeed)}
+        {" · "}
+        {recovery}
       </p>
+    </div>
+  );
+}
+
+function PlayerStatusStrip({
+  bufferStatusRef,
+  mediaStatusRef,
+}: {
+  bufferStatusRef: RefObject<HTMLSpanElement | null>;
+  mediaStatusRef: RefObject<HTMLSpanElement | null>;
+}) {
+  const peers = useTorrentStore((state) => state.metrics.peers);
+  const downloadSpeed = useTorrentStore(
+    (state) => state.metrics.downloadSpeed,
+  );
+
+  return (
+    <div className="player-status-strip">
+      <span className="online-label">
+        <i aria-hidden="true" />
+        P2P {peers ? "ONLINE" : "SEARCHING"}
+      </span>
+      <span>{peers} peers</span>
+      <span>{formatSpeed(downloadSpeed)}</span>
+      <span ref={bufferStatusRef} aria-label="Buffer state unavailable">
+        BUFFER —
+      </span>
+      <span ref={mediaStatusRef} className="status-strip-note">
+        LOADING
+      </span>
     </div>
   );
 }
@@ -275,7 +381,6 @@ function PlayerStatus({
 export function RetroPlayer({
   stream,
   meta,
-  metrics,
   subtitle,
   subtitleOffset,
   preferences,
@@ -285,10 +390,15 @@ export function RetroPlayer({
   onPlaybackError,
 }: RetroPlayerProps) {
   const playerRef = useRef<MediaPlayerInstance>(null);
-  const [buffering, setBuffering] = useState(true);
+  const bufferStatusRef = useRef<HTMLSpanElement>(null);
+  const mediaStatusRef = useRef<HTMLSpanElement>(null);
+  const [bufferingReason, setBufferingReason] =
+    useState<BufferingReason>("initial");
   const [resumeRecord, setResumeRecord] = useState<ResumeRecord | null>(null);
   const [resumeDismissed, setResumeDismissed] = useState(false);
   const lastSaveAt = useRef(0);
+  const playbackSaveBusy = useRef(false);
+  const resumeLoadRequest = useRef(0);
 
   const subtitleContent = useMemo(() => {
     if (!subtitle) return null;
@@ -317,7 +427,11 @@ export function RetroPlayer({
   ]);
 
   const loadResume = useCallback(async () => {
-    const record = await getResumeRecord(meta.infoHash, stream.file.path);
+    const request = ++resumeLoadRequest.current;
+    const record = await getResumeRecord(meta.infoHash, stream.file.path).catch(
+      () => null,
+    );
+    if (request !== resumeLoadRequest.current) return;
     if (
       record &&
       record.position > 10 &&
@@ -330,25 +444,123 @@ export function RetroPlayer({
     }
   }, [meta.infoHash, stream.file.path]);
 
-  const handleTimeUpdate = useCallback(
-    (detail: { currentTime: number }) => {
+  const handleLoadStart = useCallback(() => {
+    resumeLoadRequest.current += 1;
+    lastSaveAt.current = 0;
+    setBufferingReason("initial");
+    setResumeRecord(null);
+    setResumeDismissed(false);
+  }, []);
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+
+    return player.subscribe(
+      ({ buffered, canPlay, currentTime, ended, error, paused, playing, seeking, waiting }) => {
+        const bufferNode = bufferStatusRef.current;
+        if (bufferNode) {
+          const ahead = bufferedSecondsAhead(buffered, currentTime);
+          const value = formatBufferAhead(ahead);
+          bufferNode.textContent = "BUFFER " + value;
+          bufferNode.setAttribute("aria-label", value + " buffered ahead");
+        }
+
+        const mediaNode = mediaStatusRef.current;
+        if (mediaNode) {
+          const phase = error
+            ? "MEDIA ERROR"
+            : ended
+              ? "ENDED"
+              : seeking
+                ? "SEEKING"
+                : waiting
+                  ? "BUFFERING"
+                  : playing
+                    ? "PLAYING"
+                    : canPlay && paused
+                      ? "PAUSED"
+                      : canPlay
+                        ? "READY"
+                        : "LOADING";
+          mediaNode.textContent = phase;
+          mediaNode.dataset.state = phase.toLowerCase().replace(" ", "-");
+        }
+      },
+    );
+  }, [stream.url]);
+
+  const persistPlaybackSnapshot = useCallback(
+    (currentTime: number) => {
       const now = Date.now();
-      if (now - lastSaveAt.current < 5000 || detail.currentTime < 1) return;
+      if (
+        playbackSaveBusy.current ||
+        now - lastSaveAt.current < PLAYBACK_SAVE_INTERVAL_MS ||
+        currentTime < 1
+      ) {
+        return;
+      }
+
+      const duration = Number.isFinite(playerRef.current?.duration)
+        ? playerRef.current?.duration || 0
+        : 0;
       lastSaveAt.current = now;
-      const player = playerRef.current;
-      void saveResumeRecord({
+      playbackSaveBusy.current = true;
+
+      const resume: ResumeRecord = {
         id: meta.infoHash + ":" + stream.file.path,
         infoHash: meta.infoHash,
         torrentName: meta.name,
         filePath: stream.file.path,
         fileName: stream.file.name,
-        position: detail.currentTime,
-        duration: Number.isFinite(player?.duration) ? player?.duration || 0 : 0,
+        position: currentTime,
+        duration,
         subtitleOffset,
         lastOpenedAt: now,
+      };
+
+      // Both on-device records share the existing five-second cadence. Library
+      // failures are deliberately isolated from media playback.
+      void Promise.allSettled([
+        saveResumeRecord(resume),
+        updateLibraryRecord(meta.infoHash, {
+          selectedFilePath: stream.file.path,
+          position: currentTime,
+          duration,
+          progress: duration > 0 ? Math.min(1, currentTime / duration) : 0,
+        }),
+      ]).finally(() => {
+        playbackSaveBusy.current = false;
       });
     },
-    [meta.infoHash, meta.name, stream.file, subtitleOffset],
+    [meta.infoHash, meta.name, stream.file.name, stream.file.path, subtitleOffset],
+  );
+
+  const handleTimeUpdate = useCallback(
+    (detail: MediaTimeUpdateEventDetail) => {
+      persistPlaybackSnapshot(detail.currentTime);
+    },
+    [persistPlaybackSnapshot],
+  );
+
+  const handleVolumeChange = useCallback(
+    (detail: MediaVolumeChange) => {
+      onPreferences({ volume: detail.volume, muted: detail.muted });
+    },
+    [onPreferences],
+  );
+
+  const handleRateChange = useCallback(
+    (rate: number) => onPreferences({ playbackRate: rate }),
+    [onPreferences],
+  );
+
+  const handlePlaybackError = useCallback(
+    (detail: MediaErrorDetail) => {
+      setBufferingReason(null);
+      onPlaybackError(playbackErrorMessage(detail));
+    },
+    [onPlaybackError],
   );
 
   useEffect(() => {
@@ -445,29 +657,25 @@ export function RetroPlayer({
         ref={playerRef}
         className="retro-media-player"
         title={stream.file.name}
+        ariaLabel={"NerdTorrentPlayer: " + stream.file.name}
         src={{ src: stream.url, type: stream.mime as "video/mp4" }}
         viewType={stream.file.category === "audio" ? "audio" : "video"}
         streamType="on-demand"
         preload="metadata"
         playsInline
         keyDisabled
+        onLoadStart={handleLoadStart}
         onLoadedMetadata={() => void loadResume()}
-        onCanPlay={() => setBuffering(false)}
-        onPlaying={() => setBuffering(false)}
-        onWaiting={() => setBuffering(true)}
-        onStalled={() => setBuffering(true)}
+        onCanPlay={() => setBufferingReason(null)}
+        onPlaying={() => setBufferingReason(null)}
+        onWaiting={() => setBufferingReason("waiting")}
+        onStalled={() => setBufferingReason("stalled")}
         onTimeUpdate={handleTimeUpdate}
-        onVolumeChange={(detail) =>
-          onPreferences({ volume: detail.volume, muted: detail.muted })
-        }
-        onRateChange={(rate) => onPreferences({ playbackRate: rate })}
-        onError={(detail) =>
-          onPlaybackError(
-            detail.message ||
-              "Your browser could not decode this file. Try another media file.",
-          )
-        }
+        onVolumeChange={handleVolumeChange}
+        onRateChange={handleRateChange}
+        onError={handlePlaybackError}
       >
+        <MediaAnnouncer />
         <MediaProvider>
           {subtitle && subtitleContent ? (
             <Track
@@ -485,7 +693,9 @@ export function RetroPlayer({
 
         <div className="player-crt-shade" aria-hidden="true" />
         <Captions className="player-captions" />
-        <PlayerStatus buffering={buffering} metrics={metrics} />
+        <PlayerStatus
+          reason={bufferingReason}
+        />
 
         {resumeRecord && !resumeDismissed ? (
           <div className="resume-prompt" role="dialog" aria-label="Resume playback">
@@ -517,20 +727,14 @@ export function RetroPlayer({
 
         <PlayerControls
           hasCaptions={Boolean(subtitleContent)}
-          metrics={metrics}
           onPreferences={onPreferences}
         />
       </MediaPlayer>
 
-      <div className="player-status-strip">
-        <span className="online-label">
-          <i aria-hidden="true" />
-          P2P {metrics.peers ? "ONLINE" : "SEARCHING"}
-        </span>
-        <span>{metrics.peers} peers</span>
-        <span>{formatSpeed(metrics.downloadSpeed)}</span>
-        <span className="status-strip-note">WebRTC browser stream</span>
-      </div>
+      <PlayerStatusStrip
+        bufferStatusRef={bufferStatusRef}
+        mediaStatusRef={mediaStatusRef}
+      />
     </div>
   );
 }

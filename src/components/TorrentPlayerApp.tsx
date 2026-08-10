@@ -1,18 +1,23 @@
 "use client";
 
 import {
+  Activity,
   AlertTriangle,
   ArrowDown,
   ArrowLeft,
   ArrowUp,
   AudioLines,
+  BookOpen,
+  Braces,
   Captions,
   Check,
   ChevronRight,
   CircleHelp,
   Clipboard,
   Clock3,
+  Cpu,
   Download,
+  ExternalLink,
   File,
   FileArchive,
   FileText,
@@ -24,6 +29,8 @@ import {
   LockKeyhole,
   MonitorPlay,
   Network,
+  Pin,
+  PinOff,
   Play,
   Radio,
   RefreshCw,
@@ -33,16 +40,23 @@ import {
   ShieldCheck,
   Sparkles,
   Subtitles,
+  Terminal,
+  Timer,
   Trash2,
   Upload,
   Users,
+  Waypoints,
   Wifi,
   WifiOff,
   X,
   Zap,
 } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  Suspense,
+  lazy,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -56,6 +70,18 @@ import {
   type ResumeRecord,
 } from "../lib/history";
 import {
+  clearLibrary,
+  deleteLibraryRecord,
+  getLibrarySource,
+  getLibraryStorageStatus,
+  listLibraryRecords,
+  saveLibraryRecord,
+  touchLibraryRecord,
+  updateLibraryRecord,
+  type LibraryRecord,
+  type LibraryStorageStatus,
+} from "../lib/library";
+import {
   inferSubtitleFormat,
   subtitleFromUpload,
   type SubtitleTrackModel,
@@ -67,6 +93,7 @@ import {
 } from "../torrent/torrent-files";
 import {
   isPlayable,
+  SINTEL_DEMO_SOURCE,
   sourceFromMagnet,
   sourceFromTorrentFile,
   torrentClient,
@@ -83,9 +110,69 @@ import {
   type PlayerPreferences,
 } from "../stores/torrent-store";
 import { Modal, MobileSheet } from "./Modal";
-import { RetroPlayer } from "./RetroPlayer";
 
-const PREFS_KEY = "torrent-exe:prefs:v1";
+const RetroPlayer = lazy(() =>
+  import("./RetroPlayer").then((module) => ({ default: module.RetroPlayer })),
+);
+
+const PREFS_KEY = "nerdtorrentplayer:prefs:v1";
+const LEGACY_PREFS_KEY = "torrent-exe:prefs:v1";
+
+function subtitleOffsetKey(infoHash: string, filePath: string) {
+  return `nerdtorrentplayer:subtitle-offset:${infoHash}:${filePath}`;
+}
+
+function legacySubtitleOffsetKey(infoHash: string, filePath: string) {
+  return `torrent-exe:subtitle-offset:${infoHash}:${filePath}`;
+}
+
+function formatClockTime(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(safeSeconds % 60).padStart(2, "0")}`;
+}
+
+function formatRelativeSession(timestamp: number) {
+  const difference = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(difference / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatLatency(milliseconds?: number | null) {
+  if (milliseconds === null || milliseconds === undefined) return "—";
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)}ms`;
+  return `${(milliseconds / 1_000).toFixed(1)}s`;
+}
+
+function formatDurationMs(milliseconds?: number | null) {
+  if (
+    milliseconds === null ||
+    milliseconds === undefined ||
+    !Number.isFinite(milliseconds)
+  ) {
+    return "—";
+  }
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours
+    ? `${hours}h ${String(minutes).padStart(2, "0")}m`
+    : `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function trackerLabel(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.replace(/^wss?:\/\//, "").slice(0, 32);
+  }
+}
 
 function FileKindIcon({
   category,
@@ -165,22 +252,35 @@ function PeerNotice({
   onDismiss(): void;
 }) {
   return (
-    <div className="peer-notice" role="status">
-      <WifiOff aria-hidden="true" size={22} />
+    <motion.div
+      className="peer-notice"
+      role="status"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22 }}
+    >
+      <span className="peer-notice-icon" aria-hidden="true">
+        <WifiOff size={20} />
+      </span>
       <div>
-        <strong>WebRTC peers not found yet</strong>
+        <span className="peer-notice-kicker">HANDSHAKE PENDING</span>
+        <strong>No browser-compatible peer has answered yet</strong>
         <p>{message}</p>
+        <small>
+          This is usually a swarm compatibility issue, not a failure in your
+          browser.
+        </small>
       </div>
       <div className="inline-actions">
         <button className="mini-button active" type="button" onClick={onRetry}>
           <RefreshCw aria-hidden="true" size={14} />
-          Try again
+          Refresh trackers
         </button>
         <button className="mini-button" type="button" onClick={onDismiss}>
-          Keep waiting
+          Wait in background
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -190,11 +290,13 @@ interface HomeStageProps {
   peerNotice: string | null;
   error: string | null;
   history: ResumeRecord[];
-  onStart(source: TorrentSource): void;
+  onStart(source: TorrentSource, saveToLibrary: boolean): void;
+  onDemo(saveToLibrary: boolean): void;
   onCancel(): void;
   onRetry(): void;
   onDismissPeerNotice(): void;
   onWhy(): void;
+  onOpenLibrary(): void;
   onClearHistory(): void;
 }
 
@@ -205,18 +307,37 @@ function HomeStage({
   error,
   history,
   onStart,
+  onDemo,
   onCancel,
   onRetry,
   onDismissPeerNotice,
   onWhy,
+  onOpenLibrary,
   onClearHistory,
 }: HomeStageProps) {
   const [magnet, setMagnet] = useState("");
   const [inputError, setInputError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const [saveToLibrary, setSaveToLibrary] = useState(false);
+  const [bootSeconds, setBootSeconds] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const reduceMotion = useReducedMotion();
   const loading =
     phase === "initializing" || phase === "metadata" || phase === "waiting";
+
+  useEffect(() => {
+    if (!loading) return;
+    const startedAt = Date.now();
+    const resetTimer = window.setTimeout(() => setBootSeconds(0), 0);
+    const timer = window.setInterval(
+      () => setBootSeconds(Math.floor((Date.now() - startedAt) / 1000)),
+      1_000,
+    );
+    return () => {
+      window.clearTimeout(resetTimer);
+      window.clearInterval(timer);
+    };
+  }, [loading]);
 
   const submitMagnet = (event: FormEvent) => {
     event.preventDefault();
@@ -226,14 +347,14 @@ function HomeStage({
       return;
     }
     setInputError(null);
-    onStart(sourceFromMagnet(magnet));
+    onStart(sourceFromMagnet(magnet), saveToLibrary);
   };
 
   const chooseTorrentFile = async (file?: File) => {
     if (!file) return;
     try {
       setInputError(null);
-      onStart(await sourceFromTorrentFile(file));
+      onStart(await sourceFromTorrentFile(file), saveToLibrary);
     } catch (uploadError) {
       setInputError(
         uploadError instanceof Error
@@ -253,44 +374,152 @@ function HomeStage({
     }
   };
 
+  const activeBootStep =
+    phase === "initializing" ? 1 : phase === "metadata" ? 2 : 3;
+  const bootLog =
+    phase === "initializing"
+      ? [
+          "source.signature ........ valid",
+          "service-worker.bridge ... mounting",
+          "peer-engine ............. warming up",
+        ]
+      : phase === "metadata"
+        ? [
+            "service-worker.bridge ... online",
+            "tracker.mesh ........... querying WSS endpoints",
+            "metadata.exchange ...... awaiting handshake",
+          ]
+        : [
+            "tracker.mesh ........... retry cycle active",
+            "webrtc.transport ....... scanning compatible peers",
+            "metadata.exchange ...... still listening",
+          ];
+
   if (loading) {
     return (
       <section className="home-stage loading-stage" aria-labelledby="loading-title">
-        <div className="loading-console">
+        <motion.div
+          className="loading-console boot-console"
+          initial={reduceMotion ? false : { opacity: 0, scale: 0.985, y: 12 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ duration: 0.32, ease: "easeOut" }}
+        >
           <div className="console-topline">
-            <span className="eyebrow">BOOT SEQUENCE</span>
-            <span className="live-code">P2P::ACTIVE</span>
+            <span className="eyebrow">
+              <Terminal aria-hidden="true" size={12} />
+              SWARM SESSION / BOOT
+            </span>
+            <span className="boot-timer">
+              <Timer aria-hidden="true" size={12} />
+              T+{formatClockTime(bootSeconds)}
+            </span>
           </div>
-          <div className="loading-core" aria-live="polite">
-            <div className="radar-loader" aria-hidden="true">
-              <span />
-              <i />
+
+          <div className="boot-grid">
+            <div className="loading-core" aria-live="polite">
+              <div className="swarm-visual" aria-hidden="true">
+                <span className="swarm-ring ring-one" />
+                <span className="swarm-ring ring-two" />
+                <span className="swarm-orbit orbit-one">
+                  <i />
+                </span>
+                <span className="swarm-orbit orbit-two">
+                  <i />
+                </span>
+                <motion.span
+                  className="swarm-core"
+                  animate={reduceMotion ? undefined : { scale: [1, 1.08, 1] }}
+                  transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+                >
+                  <Waypoints size={25} />
+                </motion.span>
+              </div>
+              <span className="eyebrow">NERDTORRENT CORE</span>
+              <h1 id="loading-title">{phaseMessage}</h1>
+              <p>
+                Establishing a browser-native peer path. Keep this tab focused
+                while secure trackers exchange WebRTC handshakes.
+              </p>
+
+              <div className="boot-progress" role="status">
+                <span>
+                  <motion.i
+                    initial={false}
+                    animate={
+                      reduceMotion
+                        ? { scaleX: 0.65, x: "18%" }
+                        : {
+                            scaleX: [0.16, 0.7, 0.16],
+                            x: ["-30%", "45%", "120%"],
+                          }
+                    }
+                    transition={{
+                      duration: 1.6,
+                      repeat: reduceMotion ? 0 : Infinity,
+                      ease: "easeInOut",
+                    }}
+                  />
+                </span>
+                <output>Discovery active</output>
+              </div>
             </div>
-            <span className="eyebrow">WEBTORRENT ENGINE</span>
-            <h1 id="loading-title">{phaseMessage}</h1>
-            <p>
-              This may take a moment while the browser contacts secure WebSocket
-              trackers and looks for WebRTC-compatible peers.
-            </p>
+
+            <div className="boot-diagnostics" aria-hidden="true">
+              <div className="diagnostic-heading">
+                <span>
+                  <Braces size={13} /> live.trace
+                </span>
+                <span className="trace-status">streaming</span>
+              </div>
+              <div className="terminal-log">
+                {bootLog.map((line, index) => (
+                  <motion.code
+                    key={line}
+                    initial={reduceMotion ? false : { opacity: 0, x: -6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.08 }}
+                  >
+                    <span>&gt;</span> {line}
+                  </motion.code>
+                ))}
+                <code className="terminal-cursor">
+                  <span>&gt;</span> <i />
+                </code>
+              </div>
+              <div className="protocol-badges">
+                <span>WSS TRACKERS</span>
+                <span>WEBRTC DATA</span>
+                <span>RANGE STREAM</span>
+              </div>
+            </div>
           </div>
 
           <ol className="boot-steps" aria-label="Connection progress">
-            <li className="complete">
-              <Check aria-hidden="true" size={15} />
-              Validate source
-            </li>
-            <li className={phase !== "initializing" ? "complete" : "active"}>
-              {phase !== "initializing" ? (
-                <Check aria-hidden="true" size={15} />
-              ) : (
-                <span aria-hidden="true">02</span>
-              )}
-              Start local engine
-            </li>
-            <li className={phase === "waiting" ? "active" : ""}>
-              <span aria-hidden="true">03</span>
-              Find peers + metadata
-            </li>
+            {[
+              ["Validate source", "Magnet / torrent parsed"],
+              ["Launch engine", "Streaming bridge online"],
+              ["Query tracker mesh", "Parallel secure endpoints"],
+              ["Resolve metadata", "Decode file manifest"],
+            ].map(([label, detail], index) => {
+              const step = index;
+              const phaseStep = activeBootStep;
+              const complete = step < phaseStep;
+              const active = step === phaseStep;
+              return (
+                <li
+                  className={complete ? "complete" : active ? "active" : ""}
+                  key={label}
+                >
+                  <span className="boot-step-index" aria-hidden="true">
+                    {complete ? <Check size={13} /> : String(index + 1).padStart(2, "0")}
+                  </span>
+                  <span>
+                    <strong>{label}</strong>
+                    <small>{detail}</small>
+                  </span>
+                </li>
+              );
+            })}
           </ol>
 
           {peerNotice ? (
@@ -303,36 +532,79 @@ function HomeStage({
 
           <button className="text-button danger-text" type="button" onClick={onCancel}>
             <X aria-hidden="true" size={15} />
-            Cancel connection
+            Abort swarm session
           </button>
-        </div>
+        </motion.div>
       </section>
     );
   }
 
   return (
     <section className="home-stage" aria-labelledby="home-title">
-      <div className="hero-copy">
-        <span className="chapter-label">
-          <i aria-hidden="true" />
-          LEVEL 01 · LOAD SOURCE
-        </span>
-        <h1 id="home-title">
-          STREAM
-          <span>THE SWARM</span>
-        </h1>
-        <p>
-          Drop a torrent. Pick a file. Press play. Everything runs inside your
-          browser with no account and no media server.
-        </p>
-      </div>
+      <motion.div
+        className="hero-copy"
+        initial={reduceMotion ? false : "hidden"}
+        animate="visible"
+        variants={{
+          hidden: { opacity: 0 },
+          visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
+        }}
+      >
+        <motion.span
+          className="chapter-label hero-terminal-label"
+          variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }}
+        >
+          <Terminal aria-hidden="true" size={13} />
+          NERDTORRENTPLAYER / BROWSER P2P MEDIA LAB
+        </motion.span>
+        <motion.h1
+          id="home-title"
+          aria-label="STREAM THE SWARM."
+          variants={{ hidden: { opacity: 0, y: 14 }, visible: { opacity: 1, y: 0 } }}
+        >
+          STREAM THE
+          <span>SWARM.</span>
+        </motion.h1>
+        <motion.p
+          variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
+        >
+          Fast-start, serverless torrent streaming for people who want the
+          controls, the peer graph, and every useful byte of telemetry.
+        </motion.p>
+        <motion.div
+          className="hero-proof-row"
+          variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }}
+          aria-label="Platform capabilities"
+        >
+          <span>
+            <Zap aria-hidden="true" size={13} />
+            Seek-first pieces
+          </span>
+          <span>
+            <Activity aria-hidden="true" size={13} />
+            Live swarm telemetry
+          </span>
+          <span>
+            <ShieldCheck aria-hidden="true" size={13} />
+            Zero media uploads
+          </span>
+        </motion.div>
+      </motion.div>
 
-      <div className="source-console">
+      <motion.div
+        className="source-console"
+        initial={reduceMotion ? false : { opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.34, delay: reduceMotion ? 0 : 0.18 }}
+      >
         <div className="console-topline">
-          <span className="eyebrow">TORRENT INPUT</span>
+          <span className="eyebrow">
+            <Cpu aria-hidden="true" size={12} />
+            NEW SWARM SESSION
+          </span>
           <span className="secure-indicator">
             <LockKeyhole aria-hidden="true" size={13} />
-            LOCAL ONLY
+            LOCAL PROCESSING
           </span>
         </div>
 
@@ -347,7 +619,10 @@ function HomeStage({
         ) : null}
 
         <form className="magnet-form" onSubmit={submitMagnet} noValidate>
-          <label htmlFor="magnet-input">Magnet link</label>
+          <div className="input-label-row">
+            <label htmlFor="magnet-input">Magnet URI</label>
+            <span>PRIMARY INPUT</span>
+          </div>
           <div className={"magnet-field " + (inputError ? "has-error" : "")}>
             <span className="prompt-mark" aria-hidden="true">
               &gt;_
@@ -384,13 +659,44 @@ function HomeStage({
             </p>
           ) : (
             <p className="field-help" id="magnet-help">
-              The link stays in this tab and is never saved to your history.
+              Parsed locally. Your media is never relayed through an app server.
             </p>
           )}
+          <label
+            className="save-source-toggle"
+            htmlFor="save-source-checkbox"
+            aria-label="Save this source in my private on-device library"
+          >
+            <input
+              id="save-source-checkbox"
+              type="checkbox"
+              checked={saveToLibrary}
+              onChange={(event) => setSaveToLibrary(event.target.checked)}
+            />
+            <span className="toggle-track" aria-hidden="true">
+              <i />
+            </span>
+            <span className="toggle-copy">
+              <strong>Save this source in my private on-device library</strong>
+              <small>
+                Stores the magnet or .torrent bytes in IndexedDB so you can
+                reconnect later. Never synced.
+              </small>
+            </span>
+          </label>
           <button className="arcade-button primary-action" type="submit">
-            <Play aria-hidden="true" size={18} fill="currentColor" />
-            Connect to swarm
+            <Waypoints aria-hidden="true" size={18} />
+            Initialize swarm
             <ChevronRight aria-hidden="true" size={17} />
+          </button>
+          <button
+            className="demo-button"
+            type="button"
+            onClick={() => onDemo(saveToLibrary)}
+          >
+            <Film aria-hidden="true" size={15} />
+            Try Sintel demo
+            <span>LEGAL SAMPLE</span>
           </button>
         </form>
 
@@ -428,70 +734,418 @@ function HomeStage({
             <Upload aria-hidden="true" size={24} />
           </span>
           <span>
-            <strong>Drop a .torrent file here</strong>
-            <small>or click to choose from your device</small>
+            <strong>Drop a .torrent manifest</strong>
+            <small>or browse your device · parsed locally</small>
           </span>
           <span className="file-tag">.TORRENT</span>
         </button>
 
         <button className="browser-limit" type="button" onClick={onWhy}>
           <Radio aria-hidden="true" size={15} />
-          Browser mode connects to WebTorrent / WebRTC peers only.
-          <span>Why?</span>
+          Browser transport reaches WebTorrent / WebRTC peers only.
+          <span>Inspect the protocol</span>
         </button>
-      </div>
+      </motion.div>
 
       {history.length ? (
         <section className="recent-panel" aria-labelledby="recent-title">
           <div className="section-heading-row">
             <div>
-              <span className="eyebrow">LOCAL SAVE DATA</span>
-              <h2 id="recent-title">Recent sessions</h2>
+              <span className="eyebrow">
+                <Clock3 aria-hidden="true" size={12} />
+                PLAYBACK ACTIVITY
+              </span>
+              <h2 id="recent-title">Recent resume points</h2>
             </div>
-            <button className="text-button" type="button" onClick={onClearHistory}>
-              <Trash2 aria-hidden="true" size={14} />
-              Clear
-            </button>
+            <div className="section-actions">
+              <button className="text-button" type="button" onClick={onClearHistory}>
+                <Trash2 aria-hidden="true" size={14} />
+                Clear
+              </button>
+              <button className="mini-button active" type="button" onClick={onOpenLibrary}>
+                View library
+                <ChevronRight aria-hidden="true" size={13} />
+              </button>
+            </div>
           </div>
           <div className="recent-list">
-            {history.slice(0, 3).map((record) => (
-              <div className="recent-row" key={record.id}>
+            {history.slice(0, 3).map((record, index) => {
+              const progress = record.duration
+                ? Math.min(100, Math.max(0, (record.position / record.duration) * 100))
+                : 0;
+              return (
+              <motion.div
+                className="recent-row"
+                key={record.id}
+                initial={reduceMotion ? false : { opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: index * 0.06 }}
+              >
                 <span className="recent-icon">
                   <Film aria-hidden="true" size={18} />
                 </span>
-                <span>
+                <span className="recent-copy">
                   <strong>{record.fileName}</strong>
                   <small>{record.torrentName}</small>
+                  <span className="recent-progress" aria-hidden="true">
+                    <i style={{ width: `${progress}%` }} />
+                  </span>
                 </span>
                 <span className="recent-time">
                   <Clock3 aria-hidden="true" size={13} />
-                  {Math.floor(record.position / 60)}m
+                  {formatClockTime(record.position)} / {formatClockTime(record.duration)}
                 </span>
-                <span className="recent-note">Re-open source to resume</span>
-              </div>
-            ))}
+                <span className="recent-note">{formatRelativeSession(record.lastOpenedAt)}</span>
+              </motion.div>
+              );
+            })}
           </div>
+          <p className="library-privacy-note">
+            <LockKeyhole aria-hidden="true" size={12} />
+            Resume points stay on this device. Save the source separately in
+            Library to reconnect without pasting it again.
+          </p>
         </section>
       ) : (
         <div className="feature-grid" aria-label="Product features">
           <article>
             <Zap aria-hidden="true" size={21} />
-            <strong>Play before complete</strong>
-            <p>Pieces are fetched around playback and seek position.</p>
+            <strong>Seek-first fetching</strong>
+            <p>Prioritizes pieces around playback instead of waiting for 100%.</p>
           </article>
           <article>
-            <Subtitles aria-hidden="true" size={21} />
-            <strong>Subtitle control</strong>
-            <p>Load SRT, VTT, ASS, or SSA and fix timing on the fly.</p>
+            <Activity aria-hidden="true" size={21} />
+            <strong>Nerd telemetry</strong>
+            <p>Inspect peers, throughput, received bytes, and swarm progress.</p>
           </article>
           <article>
             <ShieldCheck aria-hidden="true" size={21} />
-            <strong>Browser private</strong>
-            <p>No login, media upload, database, or server-side library.</p>
+            <strong>Zero-server media</strong>
+            <p>Your app server never receives, stores, or transcodes the file.</p>
+          </article>
+          <article>
+            <Subtitles aria-hidden="true" size={21} />
+            <strong>Precision captions</strong>
+            <p>Load SRT, VTT, ASS, or SSA and nudge timing by tenths.</p>
           </article>
         </div>
       )}
     </section>
+  );
+}
+
+function LibraryPanel({
+  onOpen,
+}: {
+  onOpen(record: LibraryRecord): void;
+}) {
+  const library = useTorrentStore((state) => state.library);
+  const loading = useTorrentStore((state) => state.libraryLoading);
+  const error = useTorrentStore((state) => state.libraryError);
+  const query = useTorrentStore((state) => state.libraryQuery);
+  const filter = useTorrentStore((state) => state.libraryFilter);
+  const sort = useTorrentStore((state) => state.librarySort);
+  const setQuery = useTorrentStore((state) => state.setLibraryQuery);
+  const setFilter = useTorrentStore((state) => state.setLibraryFilter);
+  const setSort = useTorrentStore((state) => state.setLibrarySort);
+  const setLibrary = useTorrentStore((state) => state.setLibrary);
+  const upsertRecord = useTorrentStore((state) => state.upsertLibraryRecord);
+  const removeRecord = useTorrentStore((state) => state.removeLibraryRecord);
+  const setLibraryError = useTorrentStore((state) => state.setLibraryError);
+  const [storage, setStorage] = useState<LibraryStorageStatus | null>(null);
+  const [workingId, setWorkingId] = useState<string | null>(null);
+  const [clearArmed, setClearArmed] = useState(false);
+  const reduceMotion = useReducedMotion();
+
+  useEffect(() => {
+    let active = true;
+    void listLibraryRecords()
+      .then((records) => {
+        if (active) setLibrary(records);
+      })
+      .catch((loadError) => {
+        if (!active) return;
+        setLibraryError(
+          loadError instanceof Error
+            ? loadError.message
+            : "The local library could not be refreshed.",
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [setLibrary, setLibraryError]);
+
+  useEffect(() => {
+    void getLibraryStorageStatus().then(setStorage);
+  }, [library.length]);
+
+  const visibleRecords = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const records = library.filter((record) => {
+      if (filter === "pinned" && !record.pinned) return false;
+      if (!normalizedQuery) return true;
+      return (
+        record.title.toLocaleLowerCase().includes(normalizedQuery) ||
+        record.infoHash.toLocaleLowerCase().includes(normalizedQuery) ||
+        record.selectedFilePath?.toLocaleLowerCase().includes(normalizedQuery)
+      );
+    });
+
+    const sortedRecords = [...records].sort((a, b) => {
+      if (sort === "title") return a.title.localeCompare(b.title);
+      if (sort === "progress") return b.progress - a.progress;
+      return (
+        Number(b.pinned) - Number(a.pinned) || b.lastOpenedAt - a.lastOpenedAt
+      );
+    });
+    return filter === "recent"
+      ? sortedRecords.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).slice(0, 10)
+      : sortedRecords;
+  }, [filter, library, query, sort]);
+
+  const togglePinned = (record: LibraryRecord) => {
+    setWorkingId(record.id);
+    void updateLibraryRecord(record.id, { pinned: !record.pinned })
+      .then((updated) => {
+        if (updated) upsertRecord(updated);
+      })
+      .catch((pinError) =>
+        setLibraryError(
+          pinError instanceof Error ? pinError.message : "Pinning failed.",
+        ),
+      )
+      .finally(() => setWorkingId(null));
+  };
+
+  const remove = (record: LibraryRecord) => {
+    setWorkingId(record.id);
+    void deleteLibraryRecord(record.id)
+      .then(() => removeRecord(record.id))
+      .catch((deleteError) =>
+        setLibraryError(
+          deleteError instanceof Error
+            ? deleteError.message
+            : "The library item could not be removed.",
+        ),
+      )
+      .finally(() => setWorkingId(null));
+  };
+
+  const clearAll = () => {
+    if (!clearArmed) {
+      setClearArmed(true);
+      return;
+    }
+    setClearArmed(false);
+    void clearLibrary()
+      .then(() => setLibrary([]))
+      .catch((clearError) =>
+        setLibraryError(
+          clearError instanceof Error
+            ? clearError.message
+            : "The local library could not be cleared.",
+        ),
+      );
+  };
+
+  return (
+    <div className="library-panel">
+      <div className="library-window-intro">
+        <div>
+          <span className="eyebrow">DEVICE-LOCAL SOURCE VAULT</span>
+          <strong>
+            {library.length} saved torrent{library.length === 1 ? "" : "s"}
+          </strong>
+          <p>
+            Reconnect without hunting for the original magnet or manifest.
+            Sources never leave this browser.
+          </p>
+        </div>
+        {storage ? (
+          <div className="library-storage-status">
+            <span>
+              <i aria-hidden="true" />
+              {storage.backend === "indexeddb" ? "INDEXEDDB" : "SESSION MEMORY"}
+            </span>
+            <strong>{formatBytes(storage.sourceBytes)} sources</strong>
+            <small>{storage.persisted ? "Durable storage" : "Browser-managed storage"}</small>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="library-toolbar">
+        <label className="library-search">
+          <Search aria-hidden="true" size={15} />
+          <span className="sr-only">Search saved torrents</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search title, file, or info hash..."
+          />
+          {query ? (
+            <button
+              type="button"
+              aria-label="Clear library search"
+              onClick={() => setQuery("")}
+            >
+              <X aria-hidden="true" size={13} />
+            </button>
+          ) : null}
+        </label>
+        <div className="library-filters" aria-label="Library filters">
+          {(["all", "pinned", "recent"] as const).map((item) => (
+            <button
+              className={filter === item ? "active" : ""}
+              type="button"
+              key={item}
+              aria-pressed={filter === item}
+              onClick={() => setFilter(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <label className="library-sort">
+          <span className="sr-only">Sort library</span>
+          <select
+            value={sort}
+            onChange={(event) =>
+              setSort(event.target.value as "recent" | "title" | "progress")
+            }
+          >
+            <option value="recent">Recent first</option>
+            <option value="title">Title A–Z</option>
+            <option value="progress">Most watched</option>
+          </select>
+        </label>
+      </div>
+
+      {error ? (
+        <div className="inline-error library-error" role="alert">
+          <AlertTriangle aria-hidden="true" size={16} />
+          <div>
+            <strong>Library operation interrupted</strong>
+            <p>{error}</p>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="Dismiss library error"
+            onClick={() => setLibraryError(null)}
+          >
+            <X aria-hidden="true" size={14} />
+          </button>
+        </div>
+      ) : null}
+
+      {visibleRecords.length ? (
+        <div className="library-session-list">
+          <AnimatePresence initial={false}>
+            {visibleRecords.map((record, index) => (
+              <motion.article
+                key={record.id}
+                layout={!reduceMotion}
+                initial={reduceMotion ? false : { opacity: 0, y: 7 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, x: -8 }}
+                transition={{ delay: Math.min(index, 5) * 0.035 }}
+              >
+                <button
+                  className="library-open-button"
+                  type="button"
+                  onClick={() => onOpen(record)}
+                  disabled={loading || workingId === record.id}
+                >
+                  <span className="library-item-icon" aria-hidden="true">
+                    {record.sourceKind === "magnet" ? (
+                      <Waypoints size={17} />
+                    ) : (
+                      <FileArchive size={17} />
+                    )}
+                  </span>
+                  <span className="library-item-copy">
+                    <strong>{record.title}</strong>
+                    <small>
+                      {record.selectedFilePath ||
+                        record.torrentFileName ||
+                        record.infoHash.slice(0, 16) + "…"}
+                    </small>
+                    <span className="library-item-progress" aria-hidden="true">
+                      <i style={{ width: `${Math.round(record.progress * 100)}%` }} />
+                    </span>
+                  </span>
+                  <span className="library-item-meta">
+                    <strong>{Math.round(record.progress * 100)}%</strong>
+                    <small>{formatRelativeSession(record.lastOpenedAt)}</small>
+                  </span>
+                </button>
+                <div className="library-item-actions">
+                  <button
+                    type="button"
+                    aria-label={record.pinned ? `Unpin ${record.title}` : `Pin ${record.title}`}
+                    title={record.pinned ? "Unpin" : "Pin"}
+                    onClick={() => togglePinned(record)}
+                    disabled={workingId === record.id}
+                  >
+                    {record.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                  </button>
+                  <button
+                    className="danger-icon"
+                    type="button"
+                    aria-label={`Remove ${record.title} from library`}
+                    title="Remove"
+                    onClick={() => remove(record)}
+                    disabled={workingId === record.id}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </motion.article>
+            ))}
+          </AnimatePresence>
+        </div>
+      ) : library.length ? (
+        <div className="library-empty compact">
+          <Search aria-hidden="true" size={25} />
+          <strong>No matching torrents</strong>
+          <p>Try another search term or switch the active filter.</p>
+          <button className="mini-button" type="button" onClick={() => setQuery("")}>
+            Reset search
+          </button>
+        </div>
+      ) : (
+        <div className="library-empty">
+          <BookOpen aria-hidden="true" size={28} />
+          <strong>Your source vault is empty</strong>
+          <p>
+            Torrents you open are stored locally so you can reconnect later.
+            Nothing is synced to an account.
+          </p>
+        </div>
+      )}
+
+      <div className="library-bottom-row">
+        <div className="library-local-note">
+          <LockKeyhole aria-hidden="true" size={14} />
+          <p>
+            Raw magnets and .torrent bytes are isolated in IndexedDB and loaded
+            only after you choose an item.
+          </p>
+        </div>
+        {library.length ? (
+          <button
+            className={"mini-button " + (clearArmed ? "danger-confirm" : "")}
+            type="button"
+            onClick={clearAll}
+          >
+            <Trash2 aria-hidden="true" size={13} />
+            {clearArmed ? "Confirm clear all" : "Clear library"}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -544,6 +1198,7 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
   const metrics = useTorrentStore((state) => state.metrics);
   const peerNotice = useTorrentStore((state) => state.peerNotice);
   const setPeerNotice = useTorrentStore((state) => state.setPeerNotice);
+  const reduceMotion = useReducedMotion();
   const selected = files.find((file) => file.path === selectedFilePath) || null;
   const grouped = {
     video: files.filter((file) => file.category === "video"),
@@ -562,12 +1217,12 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
         <div>
           <span className="chapter-label">
             <i aria-hidden="true" />
-            LEVEL 02 · CHOOSE MEDIA
+            FILE MANIFEST / SELECT PAYLOAD
           </span>
           <h1 id="files-title">{meta.name}</h1>
           <p>
-            Metadata loaded. Choose what you want to play; nothing starts until
-            you press the play button.
+            Metadata decoded. Ranked by likely playability and media size—choose
+            the payload you want the piece scheduler to prioritize.
           </p>
         </div>
         <button className="secondary-button" type="button" onClick={onChangeSource}>
@@ -579,22 +1234,22 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
       <div className="metric-rack" aria-label="Torrent statistics">
         <MetricChip
           icon={<Users aria-hidden="true" size={18} />}
-          label="Peers"
+          label="Active peers"
           value={String(metrics.peers).padStart(2, "0")}
         />
         <MetricChip
           icon={<Download aria-hidden="true" size={18} />}
-          label="Down"
+          label="Ingress"
           value={formatSpeed(metrics.downloadSpeed)}
         />
         <MetricChip
           icon={<ArrowUp aria-hidden="true" size={18} />}
-          label="Up"
+          label="Egress"
           value={formatSpeed(metrics.uploadSpeed)}
         />
         <MetricChip
           icon={<FileArchive aria-hidden="true" size={18} />}
-          label="Total"
+          label="Payload"
           value={formatBytes(meta.length)}
         />
       </div>
@@ -608,7 +1263,12 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
       ) : null}
 
       {selected ? (
-        <div className="recommended-card">
+        <motion.div
+          className="recommended-card"
+          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+        >
           <div className="recommended-art" aria-hidden="true">
             <span className="art-grid" />
             <Film size={34} />
@@ -617,7 +1277,7 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
           <div className="recommended-copy">
             <span className="best-match">
               <Sparkles aria-hidden="true" size={13} />
-              BEST MATCH
+              SCHEDULER RECOMMENDATION
             </span>
             <h2>{selected.name}</h2>
             <p>
@@ -629,10 +1289,10 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
           </div>
           <button className="arcade-button primary-action" type="button" onClick={onPlay}>
             <Play aria-hidden="true" size={18} fill="currentColor" />
-            Play selected
+            Prime &amp; play
             <ChevronRight aria-hidden="true" size={17} />
           </button>
-        </div>
+        </motion.div>
       ) : (
         <div className="empty-media" role="status">
           <Search aria-hidden="true" size={28} />
@@ -647,8 +1307,8 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
       <div className="file-browser">
         <div className="browser-toolbar">
           <div>
-            <span className="eyebrow">TORRENT CONTENTS</span>
-            <strong>{files.length} files found</strong>
+            <span className="eyebrow">DECODED MANIFEST</span>
+            <strong>{files.length} objects discovered</strong>
           </div>
           <span className="selection-hint">Select one media file</span>
         </div>
@@ -707,6 +1367,231 @@ interface InspectorContentProps {
   onRetry(): void;
 }
 
+function StreamInspector({ onRetry }: { onRetry(): void }) {
+  const metrics = useTorrentStore((state) => state.metrics);
+  const metricSamples = useTorrentStore((state) => state.metricSamples);
+  const recentSamples = metricSamples.slice(-32);
+  const chartPeak = Math.max(
+    1,
+    ...recentSamples.map((sample) => sample.downloadSpeed),
+  );
+  const selectedProgress = metrics.selectedFileProgress;
+
+  return (
+    <div className="inspector-content stream-panel">
+      <div className="inspector-intro">
+        <span className="eyebrow">LIVE SWARM TELEMETRY</span>
+        <strong>Transport diagnostics</strong>
+      </div>
+      <div className="stream-health">
+        <span className={metrics.peers ? "online" : "searching"}>
+          <i aria-hidden="true" />
+          {metrics.peers ? "WebRTC transport online" : "Tracker mesh scanning"}
+        </span>
+        <strong>{metrics.peers}</strong>
+        <small>{metrics.peers === 1 ? "connected route" : "connected routes"}</small>
+      </div>
+      <div className="peer-topology" aria-label="Peer topology">
+        <span>
+          <small>WebRTC</small>
+          <strong>{metrics.connectedWebRtcPeers ?? 0}</strong>
+        </span>
+        <span>
+          <small>Web seeds</small>
+          <strong>{metrics.connectedWebSeeds ?? 0}</strong>
+        </span>
+        <span>
+          <small>Pulling data</small>
+          <strong>{metrics.activeDownloadPeers ?? 0}</strong>
+        </span>
+        <span>
+          <small>Unchoked</small>
+          <strong>{metrics.unchokedPeers ?? 0}</strong>
+        </span>
+      </div>
+
+      <section className="throughput-chart" aria-label="Recent download throughput">
+        <div>
+          <span>DOWNLINK · LAST {recentSamples.length || 0} SAMPLES</span>
+          <strong>{formatSpeed(metrics.downloadSpeed)}</strong>
+        </div>
+        <div className="throughput-bars" aria-hidden="true">
+          {recentSamples.length ? (
+            recentSamples.map((sample) => (
+              <i
+                key={sample.at}
+                style={{
+                  height: `${Math.max(3, (sample.downloadSpeed / chartPeak) * 100)}%`,
+                }}
+              />
+            ))
+          ) : (
+            <span>AWAITING PACKETS</span>
+          )}
+        </div>
+        <small>Session peak {formatSpeed(metrics.peakDownloadSpeed ?? 0)}</small>
+      </section>
+
+      <dl className="stream-stats">
+        <div>
+          <dt>
+            <ArrowDown aria-hidden="true" size={14} />
+            Download
+          </dt>
+          <dd>{formatSpeed(metrics.downloadSpeed)}</dd>
+        </div>
+        <div>
+          <dt>
+            <ArrowUp aria-hidden="true" size={14} />
+            Upload
+          </dt>
+          <dd>{formatSpeed(metrics.uploadSpeed)}</dd>
+        </div>
+        <div>
+          <dt>
+            <HardDriveDownload aria-hidden="true" size={14} />
+            Verified
+          </dt>
+          <dd>{formatBytes(metrics.downloaded)}</dd>
+        </div>
+        <div>
+          <dt>
+            <Upload aria-hidden="true" size={14} />
+            Sent
+          </dt>
+          <dd>{formatBytes(metrics.uploaded)}</dd>
+        </div>
+        <div>
+          <dt>
+            <Activity aria-hidden="true" size={14} />
+            Share ratio
+          </dt>
+          <dd>{(metrics.ratio ?? 0).toFixed(2)}</dd>
+        </div>
+        <div>
+          <dt>
+            <Network aria-hidden="true" size={14} />
+            Transport
+          </dt>
+          <dd>WEBRTC / WSS</dd>
+        </div>
+      </dl>
+      <div className="timing-grid" aria-label="Connection timing">
+        <span>
+          <small>Metadata</small>
+          <strong>{formatLatency(metrics.timeToMetadataMs)}</strong>
+        </span>
+        <span>
+          <small>First peer</small>
+          <strong>{formatLatency(metrics.timeToFirstPeerMs)}</strong>
+        </span>
+        <span>
+          <small>First byte</small>
+          <strong>{formatLatency(metrics.timeToFirstByteMs)}</strong>
+        </span>
+        <span>
+          <small>Torrent ETA</small>
+          <strong>{formatDurationMs(metrics.timeRemaining)}</strong>
+        </span>
+      </div>
+      <div className="diagnostic-strip" aria-label="Low-level transfer counters">
+        <span>
+          <small>Piece size</small>
+          <strong>{metrics.pieceLength ? formatBytes(metrics.pieceLength) : "—"}</strong>
+        </span>
+        <span>
+          <small>Wire bytes</small>
+          <strong>{formatBytes(metrics.received ?? metrics.downloaded)}</strong>
+        </span>
+        <span>
+          <small>Announces</small>
+          <strong>{metrics.trackerAnnounces ?? 0}</strong>
+        </span>
+        <span>
+          <small>Reannounces</small>
+          <strong>{metrics.reannounceAttempts ?? 0}</strong>
+        </span>
+        <span>
+          <small>Route warnings</small>
+          <strong>{metrics.trackerWarnings ?? 0}</strong>
+        </span>
+        <span>
+          <small>Stalled</small>
+          <strong>{formatDurationMs(metrics.stalledForMs ?? 0)}</strong>
+        </span>
+      </div>
+      <div className="torrent-progress">
+        <div>
+          <span>Verified torrent bytes</span>
+          <strong>{Math.round(metrics.progress * 100)}%</strong>
+        </div>
+        <progress max={1} value={metrics.progress}>
+          {Math.round(metrics.progress * 100)}%
+        </progress>
+        {selectedProgress !== null && selectedProgress !== undefined ? (
+          <div className="selected-file-progress">
+            <span>Selected file</span>
+            <strong>{Math.round(selectedProgress * 100)}%</strong>
+          </div>
+        ) : null}
+        <p>
+          Torrent completion and media-buffer health are different signals. A
+          stream can start long before this reaches 100%.
+        </p>
+      </div>
+      {metrics.trackers?.length ? (
+        <section className="tracker-matrix" aria-labelledby="tracker-matrix-title">
+          <div>
+            <span id="tracker-matrix-title">TRACKER MESH</span>
+            <strong>
+              {metrics.responsiveTrackers ?? 0}/{metrics.trackerCount ?? 0} responsive
+            </strong>
+          </div>
+          <ul>
+            {metrics.trackers.slice(0, 6).map((tracker) => (
+              <li key={tracker.url}>
+                <i className={tracker.status} aria-hidden="true" />
+                <span title={tracker.url}>{trackerLabel(tracker.url)}</span>
+                <small>{tracker.announces} announces</small>
+              </li>
+            ))}
+          </ul>
+          <p className="tracker-policy">
+            {metrics.publicTrackerFallbacks
+              ? "Official public WebTorrent fallbacks active"
+              : "Using the torrent's declared tracker policy"}
+          </p>
+        </section>
+      ) : null}
+      {(metrics.recoverableWebRtcErrors ?? 0) > 0 ? (
+        <div className="recoverable-rtc-note">
+          <Activity aria-hidden="true" size={14} />
+          <p>
+            <strong>
+              {metrics.recoverableWebRtcErrors} candidate warning
+              {metrics.recoverableWebRtcErrors === 1 ? "" : "s"}
+            </strong>
+            Normal during peer negotiation; failed candidates were skipped while
+            the remaining routes stayed active.
+          </p>
+        </div>
+      ) : null}
+      <button className="secondary-button full-width" type="button" onClick={onRetry}>
+        <RefreshCw aria-hidden="true" size={15} />
+        Refresh peer routes
+      </button>
+      <div className="cast-note">
+        <MonitorPlay aria-hidden="true" size={18} />
+        <p>
+          Google Cast is disabled because a TV cannot fetch this
+          browser-local stream. AirPlay appears only when Safari reports it as
+          available and compatible.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function InspectorContent({
   panel,
   onSwitchFile,
@@ -715,7 +1600,6 @@ function InspectorContent({
 }: InspectorContentProps) {
   const files = useTorrentStore((state) => state.files);
   const selectedFilePath = useTorrentStore((state) => state.selectedFilePath);
-  const metrics = useTorrentStore((state) => state.metrics);
   const meta = useTorrentStore((state) => state.meta);
   const subtitles = useTorrentStore((state) => state.subtitles);
   const activeSubtitleId = useTorrentStore((state) => state.activeSubtitleId);
@@ -887,70 +1771,7 @@ function InspectorContent({
     );
   }
 
-  return (
-    <div className="inspector-content stream-panel">
-      <div className="inspector-intro">
-        <span className="eyebrow">LIVE TELEMETRY</span>
-        <strong>Swarm status</strong>
-      </div>
-      <div className="stream-health">
-        <span className={metrics.peers ? "online" : "searching"}>
-          <i aria-hidden="true" />
-          {metrics.peers ? "P2P connection active" : "Searching for peers"}
-        </span>
-        <strong>{metrics.peers}</strong>
-        <small>connected peers</small>
-      </div>
-      <dl className="stream-stats">
-        <div>
-          <dt>
-            <ArrowDown aria-hidden="true" size={14} />
-            Download
-          </dt>
-          <dd>{formatSpeed(metrics.downloadSpeed)}</dd>
-        </div>
-        <div>
-          <dt>
-            <ArrowUp aria-hidden="true" size={14} />
-            Upload
-          </dt>
-          <dd>{formatSpeed(metrics.uploadSpeed)}</dd>
-        </div>
-        <div>
-          <dt>
-            <HardDriveDownload aria-hidden="true" size={14} />
-            Received
-          </dt>
-          <dd>{formatBytes(metrics.downloaded)}</dd>
-        </div>
-      </dl>
-      <div className="torrent-progress">
-        <div>
-          <span>Whole torrent progress</span>
-          <strong>{Math.round(metrics.progress * 100)}%</strong>
-        </div>
-        <progress max={1} value={metrics.progress}>
-          {Math.round(metrics.progress * 100)}%
-        </progress>
-        <p>
-          This is byte completion, not the amount currently buffered by the
-          video player.
-        </p>
-      </div>
-      <button className="secondary-button full-width" type="button" onClick={onRetry}>
-        <RefreshCw aria-hidden="true" size={15} />
-        Reconnect to swarm
-      </button>
-      <div className="cast-note">
-        <MonitorPlay aria-hidden="true" size={18} />
-        <p>
-          Google Cast is disabled because a TV cannot fetch this
-          browser-local stream. AirPlay appears only when Safari reports it as
-          available and compatible.
-        </p>
-      </div>
-    </div>
-  );
+  return <StreamInspector onRetry={onRetry} />;
 }
 
 function WatchStage({
@@ -966,7 +1787,6 @@ function WatchStage({
 }) {
   const stream = useTorrentStore((state) => state.stream);
   const meta = useTorrentStore((state) => state.meta);
-  const metrics = useTorrentStore((state) => state.metrics);
   const files = useTorrentStore((state) => state.files);
   const subtitles = useTorrentStore((state) => state.subtitles);
   const activeSubtitleId = useTorrentStore((state) => state.activeSubtitleId);
@@ -987,10 +1807,7 @@ function WatchStage({
     if (!meta || !stream) return;
     try {
       localStorage.setItem(
-        "torrent-exe:subtitle-offset:" +
-          meta.infoHash +
-          ":" +
-          stream.file.path,
+        subtitleOffsetKey(meta.infoHash, stream.file.path),
         String(subtitleOffset),
       );
     } catch {
@@ -1066,36 +1883,50 @@ function WatchStage({
 
       <div className="watch-layout">
         <div className="watch-main">
-          <RetroPlayer
-            stream={stream}
-            meta={meta}
-            metrics={metrics}
-            subtitle={activeSubtitle}
-            subtitleOffset={subtitleOffset}
-            preferences={preferences}
-            onPreferences={(next: Partial<PlayerPreferences>) => {
-              setPreferences(next);
-              const merged = {
-                ...useTorrentStore.getState().preferences,
-                ...next,
-              };
-              localStorage.setItem(PREFS_KEY, JSON.stringify(merged));
-            }}
-            onSubtitleToggle={() =>
-              setActiveSubtitle(activeSubtitleId ? null : subtitles[0]?.id || null)
+          <Suspense
+            fallback={
+              <div className="player-frame player-module-loading" role="status">
+                <div className="pixel-loader" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <span className="eyebrow">LOADING PLAYER MODULE</span>
+                <strong>Preparing the local media pipeline…</strong>
+              </div>
             }
-            onSubtitleOffset={(offset) =>
-              setSubtitleOffset(
-                Math.max(-60, Math.min(60, Math.round(offset * 10) / 10)),
-              )
-            }
-            onPlaybackError={(message) =>
-              setError(
-                message +
-                  " This app streams the original file and does not transcode unsupported codecs.",
-              )
-            }
-          />
+          >
+            <RetroPlayer
+              stream={stream}
+              meta={meta}
+              subtitle={activeSubtitle}
+              subtitleOffset={subtitleOffset}
+              preferences={preferences}
+              onPreferences={(next: Partial<PlayerPreferences>) => {
+                setPreferences(next);
+                const merged = {
+                  ...useTorrentStore.getState().preferences,
+                  ...next,
+                };
+                localStorage.setItem(PREFS_KEY, JSON.stringify(merged));
+              }}
+              onSubtitleToggle={() =>
+                setActiveSubtitle(activeSubtitleId ? null : subtitles[0]?.id || null)
+              }
+              onSubtitleOffset={(offset) =>
+                setSubtitleOffset(
+                  Math.max(-60, Math.min(60, Math.round(offset * 10) / 10)),
+                )
+              }
+              onPlaybackError={(message) =>
+                setError(
+                  message +
+                    " This app streams the original file and does not transcode unsupported codecs.",
+                )
+              }
+            />
+          </Suspense>
 
           <div className="media-summary">
             <div>
@@ -1183,19 +2014,52 @@ function WatchStage({
   );
 }
 
+function HeaderConnectionStatus() {
+  const phase = useTorrentStore((state) => state.phase);
+  const peers = useTorrentStore((state) => state.metrics.peers);
+  const label =
+    phase === "idle"
+      ? "ENGINE READY"
+      : phase === "streaming"
+        ? peers
+          ? `${peers} PEER${peers === 1 ? "" : "S"} ONLINE`
+          : "DISCOVERING PEERS"
+        : phase === "waiting"
+          ? "HANDSHAKE PENDING"
+          : phase === "failed"
+            ? "ENGINE INTERRUPTED"
+            : phase.toUpperCase();
+
+  return (
+    <span className={"system-led " + (phase === "failed" ? "danger" : "")}>
+      <i aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
 export function TorrentPlayerApp() {
+  const reduceMotion = useReducedMotion();
   const view = useTorrentStore((state) => state.view);
   const phase = useTorrentStore((state) => state.phase);
   const phaseMessage = useTorrentStore((state) => state.phaseMessage);
-  const metrics = useTorrentStore((state) => state.metrics);
   const error = useTorrentStore((state) => state.error);
   const peerNotice = useTorrentStore((state) => state.peerNotice);
   const history = useTorrentStore((state) => state.history);
+  const library = useTorrentStore((state) => state.library);
+  const libraryOpen = useTorrentStore((state) => state.libraryOpen);
   const helpOpen = useTorrentStore((state) => state.helpOpen);
   const whyOpen = useTorrentStore((state) => state.whyOpen);
   const setHelpOpen = useTorrentStore((state) => state.setHelpOpen);
   const setWhyOpen = useTorrentStore((state) => state.setWhyOpen);
   const setHistory = useTorrentStore((state) => state.setHistory);
+  const setLibrary = useTorrentStore((state) => state.setLibrary);
+  const setLibraryOpen = useTorrentStore((state) => state.setLibraryOpen);
+  const setLibraryLoading = useTorrentStore((state) => state.setLibraryLoading);
+  const setLibraryError = useTorrentStore((state) => state.setLibraryError);
+  const upsertLibraryRecord = useTorrentStore(
+    (state) => state.upsertLibraryRecord,
+  );
   const resetSession = useTorrentStore((state) => state.resetSession);
   const [changeConfirmOpen, setChangeConfirmOpen] = useState(false);
   const [globalDrag, setGlobalDrag] = useState(false);
@@ -1203,8 +2067,21 @@ export function TorrentPlayerApp() {
 
   useEffect(() => {
     void listResumeRecords().then(setHistory);
+    setLibraryLoading(true);
+    void listLibraryRecords()
+      .then(setLibrary)
+      .catch((libraryLoadError) =>
+        setLibraryError(
+          libraryLoadError instanceof Error
+            ? libraryLoadError.message
+            : "The local library could not be opened.",
+        ),
+      )
+      .finally(() => setLibraryLoading(false));
     try {
-      const stored = localStorage.getItem(PREFS_KEY);
+      const stored =
+        localStorage.getItem(PREFS_KEY) ||
+        localStorage.getItem(LEGACY_PREFS_KEY);
       if (stored) {
         const parsed = JSON.parse(stored) as Partial<PlayerPreferences>;
         const restored: Partial<PlayerPreferences> = {};
@@ -1245,7 +2122,7 @@ export function TorrentPlayerApp() {
       window.removeEventListener("beforeunload", onBeforeUnload);
       void torrentClient.destroyCurrent();
     };
-  }, [setHistory]);
+  }, [setHistory, setLibrary, setLibraryError, setLibraryLoading]);
 
   const loadTorrentSubtitles = async (
     infoHash: string,
@@ -1284,14 +2161,53 @@ export function TorrentPlayerApp() {
     }
   };
 
-  const startSource = (source: TorrentSource) => {
+  const startSource = (
+    source: TorrentSource,
+    options: {
+      preferredFilePath?: string | null;
+      persistSource?: boolean;
+    } = {},
+  ) => {
+    const { preferredFilePath, persistSource = false } = options;
     resetSession();
     useTorrentStore.getState().setPhase("initializing", "Starting the browser P2P engine...");
     void torrentClient.load(source, {
       onPhase: (nextPhase, message) =>
         useTorrentStore.getState().setPhase(nextPhase, message),
       onReady: (meta, files) => {
-        useTorrentStore.getState().setReady(meta, files);
+        const state = useTorrentStore.getState();
+        state.setReady(meta, files);
+        if (
+          preferredFilePath &&
+          files.some((file) => file.path === preferredFilePath && isPlayable(file))
+        ) {
+          state.selectFile(preferredFilePath);
+        }
+        if (persistSource) {
+          void saveLibraryRecord({
+            consent: true,
+            infoHash: meta.infoHash,
+            title: meta.name,
+            totalBytes: meta.length,
+            selectedFilePath: preferredFilePath,
+            source:
+              typeof source.value === "string"
+                ? { kind: "magnet", value: source.value }
+                : {
+                    kind: "torrent",
+                    value: source.value,
+                    fileName: source.label,
+                  },
+          })
+            .then(upsertLibraryRecord)
+            .catch((librarySaveError) =>
+              setLibraryError(
+                librarySaveError instanceof Error
+                  ? librarySaveError.message
+                  : "This source could not be saved to the local library.",
+              ),
+            );
+        }
         void loadTorrentSubtitles(meta.infoHash, files);
       },
       onMetrics: (nextMetrics) =>
@@ -1314,15 +2230,21 @@ export function TorrentPlayerApp() {
     if (!state.selectedFilePath || !state.meta) return;
     try {
       const stream = torrentClient.getStream(state.selectedFilePath);
-      const offsetKey =
-        "torrent-exe:subtitle-offset:" +
-        state.meta.infoHash +
-        ":" +
-        stream.file.path;
-      const savedOffset = localStorage.getItem(offsetKey);
+      const savedOffset =
+        localStorage.getItem(
+          subtitleOffsetKey(state.meta.infoHash, stream.file.path),
+        ) ||
+        localStorage.getItem(
+          legacySubtitleOffsetKey(state.meta.infoHash, stream.file.path),
+        );
       const storedOffset = savedOffset === null ? 0 : Number(savedOffset);
       state.setSubtitleOffset(Number.isFinite(storedOffset) ? storedOffset : 0);
       state.beginWatch(stream);
+      void updateLibraryRecord(state.meta.infoHash, {
+        selectedFilePath: stream.file.path,
+      }).then((record) => {
+        if (record) upsertLibraryRecord(record);
+      });
     } catch (streamError) {
       state.setError(
         streamError instanceof Error
@@ -1338,16 +2260,24 @@ export function TorrentPlayerApp() {
     try {
       const stream = torrentClient.getStream(path);
       if (state.meta) {
-        const offsetKey =
-          "torrent-exe:subtitle-offset:" +
-          state.meta.infoHash +
-          ":" +
-          stream.file.path;
-        const savedOffset = localStorage.getItem(offsetKey);
+        const savedOffset =
+          localStorage.getItem(
+            subtitleOffsetKey(state.meta.infoHash, stream.file.path),
+          ) ||
+          localStorage.getItem(
+            legacySubtitleOffsetKey(state.meta.infoHash, stream.file.path),
+          );
         const storedOffset = savedOffset === null ? 0 : Number(savedOffset);
         state.setSubtitleOffset(Number.isFinite(storedOffset) ? storedOffset : 0);
       }
       state.beginWatch(stream);
+      if (state.meta) {
+        void updateLibraryRecord(state.meta.infoHash, {
+          selectedFilePath: stream.file.path,
+        }).then((record) => {
+          if (record) upsertLibraryRecord(record);
+        });
+      }
     } catch (streamError) {
       state.setError(
         streamError instanceof Error
@@ -1374,12 +2304,7 @@ export function TorrentPlayerApp() {
   const retry = () => {
     useTorrentStore.getState().setError(null);
     useTorrentStore.getState().setPeerNotice(null);
-    if (view === "watch") {
-      const path = useTorrentStore.getState().selectedFilePath;
-      if (path) switchFile(path);
-    } else {
-      void torrentClient.retry();
-    }
+    void torrentClient.retry();
   };
 
   const confirmChangeSource = () => {
@@ -1406,6 +2331,44 @@ export function TorrentPlayerApp() {
       );
   };
 
+  const openNewSession = () => {
+    if (view === "landing" && phase === "idle") {
+      document.getElementById("magnet-input")?.focus();
+      return;
+    }
+    setChangeConfirmOpen(true);
+  };
+
+  const openLibraryItem = (record: LibraryRecord) => {
+    setLibraryLoading(true);
+    setLibraryError(null);
+    void getLibrarySource(record.id)
+      .then(async (storedSource) => {
+        if (!storedSource) {
+          throw new Error(
+            "The private source payload is missing. Remove this entry and add the torrent again.",
+          );
+        }
+        const source: TorrentSource =
+          storedSource.kind === "magnet"
+            ? sourceFromMagnet(storedSource.value)
+            : { value: storedSource.value, label: storedSource.fileName };
+        setLibraryOpen(false);
+        startSource(source, { preferredFilePath: record.selectedFilePath });
+        const touched = await touchLibraryRecord(record.id);
+        if (touched) upsertLibraryRecord(touched);
+      })
+      .catch((libraryOpenError) => {
+        setLibraryOpen(true);
+        setLibraryError(
+          libraryOpenError instanceof Error
+            ? libraryOpenError.message
+            : "The saved torrent could not be reopened.",
+        );
+      })
+      .finally(() => setLibraryLoading(false));
+  };
+
   return (
     <main
       className="app-shell"
@@ -1426,95 +2389,152 @@ export function TorrentPlayerApp() {
       </a>
       <div className="scanline-overlay" aria-hidden="true" />
       <header className="site-header">
-        <button
-          className="brand"
-          type="button"
-          onClick={() => {
-            if (view === "landing" && phase === "idle") return;
-            setChangeConfirmOpen(true);
-          }}
-          aria-label="Torrent.exe home"
-        >
-          <span className="brand-mark" aria-hidden="true">
-            <Play size={14} fill="currentColor" />
-          </span>
-          <span>
-            TORRENT<span>.EXE</span>
-          </span>
-        </button>
-
-        <div className="header-status">
-          <span className={"system-led " + (phase === "failed" ? "danger" : "")}>
-            <i aria-hidden="true" />
-            {phase === "idle"
-              ? "SYSTEM READY"
-              : phase === "streaming"
-                ? metrics.peers
-                  ? "P2P ONLINE"
-                  : "P2P SEARCHING"
-                : phase.toUpperCase()}
-          </span>
-          <span className="browser-mode">BROWSER MODE</span>
+        <div className="header-brand-zone">
+          <button
+            className="brand"
+            type="button"
+            onClick={openNewSession}
+            aria-label="NerdTorrentPlayer home"
+          >
+            <span className="brand-mark" aria-hidden="true">
+              <Waypoints size={16} />
+              <i />
+            </span>
+            <span className="brand-copy">
+              <strong>NerdTorrent</strong>
+              <small>Player</small>
+            </span>
+          </button>
+          <span className="build-channel">WEB / P2P</span>
         </div>
 
-        <nav className="header-nav" aria-label="Help">
-          <button type="button" onClick={() => setWhyOpen(true)}>
-            <CircleHelp aria-hidden="true" size={16} />
-            About
+        <div className="header-status">
+          <HeaderConnectionStatus />
+          <span className="browser-mode">
+            {view === "landing" ? "LOAD" : view === "files" ? "MANIFEST" : "PLAYER"}
+            <b aria-hidden="true">/</b>
+            {view === "landing" ? "01" : view === "files" ? "02" : "03"}
+          </span>
+        </div>
+
+        <nav className="header-nav" aria-label="Primary navigation">
+          <button className="nav-primary" type="button" onClick={openNewSession}>
+            <Upload aria-hidden="true" size={15} />
+            <span>New stream</span>
           </button>
-          <button type="button" onClick={() => setHelpOpen(true)}>
+          <button type="button" onClick={() => setLibraryOpen(true)}>
+            <BookOpen aria-hidden="true" size={16} />
+            <span>Library</span>
+            {library.length ? (
+              <b className="nav-count" aria-label={`${library.length} saved torrents`}>
+                {Math.min(library.length, 99)}
+              </b>
+            ) : null}
+          </button>
+          <button
+            className="nav-icon-button"
+            type="button"
+            onClick={() => setWhyOpen(true)}
+            aria-label="About browser torrent streaming"
+            title="About"
+          >
+            <CircleHelp aria-hidden="true" size={16} />
+          </button>
+          <button
+            className="nav-icon-button"
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts"
+          >
             <Keyboard aria-hidden="true" size={16} />
-            Shortcuts
             <kbd>?</kbd>
           </button>
         </nav>
       </header>
 
       <div id="main-content" className="page-content">
-        {view === "landing" ? (
-          <HomeStage
-            phase={phase}
-            phaseMessage={phaseMessage}
-            peerNotice={peerNotice}
-            error={error}
-            history={history}
-            onStart={startSource}
-            onCancel={cancelSource}
-            onRetry={retry}
-            onDismissPeerNotice={() =>
-              useTorrentStore.getState().setPeerNotice(null)
-            }
-            onWhy={() => setWhyOpen(true)}
-            onClearHistory={() =>
-              void clearResumeRecords().then(() => setHistory([]))
-            }
-          />
-        ) : null}
-        {view === "files" ? (
-          <FilesStage
-            onPlay={playSelected}
-            onChangeSource={() => setChangeConfirmOpen(true)}
-            onRetry={retry}
-          />
-        ) : null}
-        {view === "watch" ? (
-          <WatchStage
-            onSwitchFile={switchFile}
-            onChangeSource={() => setChangeConfirmOpen(true)}
-            onSubtitleUpload={uploadSubtitle}
-            onRetry={retry}
-          />
-        ) : null}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            className="view-transition"
+            key={view}
+            initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -7 }}
+            transition={{ duration: reduceMotion ? 0 : 0.22, ease: "easeOut" }}
+          >
+            {view === "landing" ? (
+              <HomeStage
+                phase={phase}
+                phaseMessage={phaseMessage}
+                peerNotice={peerNotice}
+                error={error}
+                history={history}
+                onStart={(source, persistSource) =>
+                  startSource(source, { persistSource })
+                }
+                onDemo={(persistSource) =>
+                  startSource(SINTEL_DEMO_SOURCE, { persistSource })
+                }
+                onCancel={cancelSource}
+                onRetry={retry}
+                onDismissPeerNotice={() =>
+                  useTorrentStore.getState().setPeerNotice(null)
+                }
+                onWhy={() => setWhyOpen(true)}
+                onOpenLibrary={() => setLibraryOpen(true)}
+                onClearHistory={() =>
+                  void clearResumeRecords().then(() => setHistory([]))
+                }
+              />
+            ) : null}
+            {view === "files" ? (
+              <FilesStage
+                onPlay={playSelected}
+                onChangeSource={() => setChangeConfirmOpen(true)}
+                onRetry={retry}
+              />
+            ) : null}
+            {view === "watch" ? (
+              <WatchStage
+                onSwitchFile={switchFile}
+                onChangeSource={() => setChangeConfirmOpen(true)}
+                onSubtitleUpload={uploadSubtitle}
+                onRetry={retry}
+              />
+            ) : null}
+          </motion.div>
+        </AnimatePresence>
       </div>
 
       <footer className="site-footer">
-        <span>
-          <Gamepad2 aria-hidden="true" size={15} />
-          TORRENT.EXE · PLAY RESPONSIBLY
-        </span>
-        <span>
-          Your IP and traffic are visible to peers in the torrent swarm.
-        </span>
+        <div className="footer-brand">
+          <span className="footer-mark" aria-hidden="true">
+            <Gamepad2 size={15} />
+          </span>
+          <span>
+            <strong>NerdTorrentPlayer</strong>
+            <small>Browser-native P2P streaming</small>
+          </span>
+        </div>
+        <div className="footer-safety">
+          <ShieldCheck aria-hidden="true" size={15} />
+          <span>
+            <strong>Peer-visible connection</strong>
+            <small>Your IP and traffic are visible to the torrent swarm.</small>
+          </span>
+        </div>
+        <p className="footer-credit">
+          Built with love ❤️ by{" "}
+          <a
+            href="http://gautamvhavle.xyz/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Gautam Vhavle
+            <ExternalLink aria-hidden="true" size={11} />
+          </a>
+        </p>
       </footer>
 
       {globalDrag ? (
@@ -1526,6 +2546,15 @@ export function TorrentPlayerApp() {
           </div>
         </div>
       ) : null}
+
+      <Modal
+        open={libraryOpen}
+        title="Torrent source vault"
+        onClose={() => setLibraryOpen(false)}
+        className="library-modal"
+      >
+        <LibraryPanel onOpen={openLibraryItem} />
+      </Modal>
 
       <Modal
         open={whyOpen}
@@ -1558,8 +2587,9 @@ export function TorrentPlayerApp() {
             <div>
               <strong>No application backend</strong>
               <p>
-                Torrent metadata and media stay in this tab. Resume position is
-                stored only on this device; raw magnet links are not retained.
+                Torrent metadata and media stay in this browser. Raw sources
+                are retained only when you explicitly save them to the private
+                on-device library.
               </p>
             </div>
           </article>
@@ -1568,8 +2598,9 @@ export function TorrentPlayerApp() {
             <div>
               <strong>Original codecs</strong>
               <p>
-                TORRENT.EXE does not transcode. MP4 H.264/AAC and WebM are the
-                safest; MKV, AVI, HEVC, and unusual audio codecs may not play.
+                NerdTorrentPlayer does not transcode. MP4 H.264/AAC and WebM
+                are the safest; MKV, AVI, HEVC, and unusual audio codecs may not
+                play.
               </p>
             </div>
           </article>
