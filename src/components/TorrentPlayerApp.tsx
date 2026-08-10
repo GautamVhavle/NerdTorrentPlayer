@@ -759,8 +759,8 @@ function HomeStage({
             </p>
           ) : (
             <p className="field-help" id="magnet-help">
-              Parsed locally. The companion can reach UDP/TCP peers when your browser
-              permits local-network access; localhost mode is the reliable fallback.
+              Parsed locally. Browser-compatible swarms work here; UDP/TCP-only magnets
+              require localhost mode.
             </p>
           )}
           <label

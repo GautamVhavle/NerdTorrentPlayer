@@ -903,7 +903,8 @@ class RoutedTorrentClientService {
     ]);
     if (epoch !== this.routeEpoch) return;
 
-    const bridged = shouldPreferNativeTransport(source.value)
+    const nativeOnly = shouldPreferNativeTransport(source.value);
+    const bridged = nativeOnly
       ? await this.bridge.tryLoad(source, handlers)
       : false;
     if (epoch !== this.routeEpoch) {
@@ -912,6 +913,17 @@ class RoutedTorrentClientService {
     }
     if (bridged) {
       this.active = this.bridge;
+      return;
+    }
+    if (nativeOnly) {
+      this.active = null;
+      handlers.onPhase(
+        "failed",
+        "This conventional torrent requires the local app.",
+      );
+      handlers.onError(
+        "This magnet only advertises UDP/TCP routes, which a hosted browser cannot use. Run npm run dev and open http://localhost:3000. No localhost or WebSocket tracker request was started from this hosted page.",
+      );
       return;
     }
 

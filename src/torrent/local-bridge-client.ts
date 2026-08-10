@@ -14,7 +14,6 @@ const DEFAULT_BRIDGE_ORIGIN = "http://127.0.0.1:41780";
 const TRUSTED_APP_ORIGINS = new Set([
   "http://localhost:3000",
   "http://127.0.0.1:3000",
-  "https://nerdtorrentplayer.vercel.app",
 ]);
 // First loopback access can include a browser CORS/PNA preflight and should not
 // silently fall back to WebRTC merely because that handshake is cold.
@@ -184,9 +183,9 @@ function needsContainerConversion(file: TorrentFileView): boolean {
 /**
  * Optional localhost companion for conventional BitTorrent swarms.
  *
- * Only the local development app and the exact production origin may probe
- * the loopback helper. The helper independently applies Origin, Host, and
- * capability-token checks before it accepts a torrent.
+ * Only the local development app may probe the loopback helper. Hosted pages
+ * never touch 127.0.0.1 automatically, so a missing companion cannot create a
+ * misleading production console error.
  */
 export class LocalTorrentBridgeClient {
   private handlers: TorrentServiceHandlers | null = null;

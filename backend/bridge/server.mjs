@@ -14,11 +14,7 @@ const DEFAULT_PORT = 41780;
 const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
-  "https://nerdtorrentplayer.vercel.app",
 ];
-const TRUSTED_REMOTE_APP_ORIGINS = new Set([
-  "https://nerdtorrentplayer.vercel.app",
-]);
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_METADATA_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_JSON_BYTES = 16 * 1024;
@@ -81,7 +77,7 @@ function normalizeAllowedOrigins(origins) {
     const localHttp =
       parsed.protocol === "http:" &&
       ["localhost", "127.0.0.1"].includes(parsed.hostname);
-    if (!localHttp && !TRUSTED_REMOTE_APP_ORIGINS.has(origin)) {
+    if (!localHttp) {
       throw new Error(`Bridge origin is not a trusted NerdTorrentPlayer app: ${origin}`);
     }
   }
