@@ -16,9 +16,12 @@ import {
   TimeSlider,
   Track,
   VolumeSlider,
+  isHLSProvider,
   useMediaRemote,
   useMediaState,
   type MediaErrorDetail,
+  type MediaProviderAdapter,
+  type MediaSrc,
   type MediaPlayerInstance,
   type MediaTimeUpdateEventDetail,
   type MediaVolumeChange,
@@ -104,16 +107,28 @@ function formatBufferAhead(seconds: number) {
   return Math.floor(seconds / 60) + "m " + Math.floor(seconds % 60) + "s";
 }
 
-function playbackErrorMessage(detail: MediaErrorDetail) {
+function playbackErrorMessage(
+  detail: MediaErrorDetail,
+  playbackKind?: StreamSource["playbackKind"],
+) {
   switch (detail.code) {
     case 1:
+      if (playbackKind === "hls") {
+        return "The local HLS window did not become ready before this attempt ended. If peer speed is below the media bitrate, let the swarm warm up and retry.";
+      }
       return "Playback was interrupted before it finished. Press play to retry the current range.";
     case 2:
       return "The browser lost the local torrent stream. Keep this tab open while the swarm reconnects, then retry.";
     case 3:
+      if (playbackKind === "hls") {
+        return "The local HLS stream arrived, but this browser cannot decode one of its copied audio or video codecs.";
+      }
       return "The file arrived, but this browser cannot decode its audio or video codec. Try another media file or browser.";
     case 4:
-      return "This container or codec is not supported by the browser. NerdTorrentPlayer does not transcode media.";
+      if (playbackKind === "hls") {
+        return "The local HLS playlist could not be loaded or decoded. Check the bridge warning in Stream diagnostics.";
+      }
+      return "This stream could not be decoded. Direct browser mode requires a supported container and codec; the localhost bridge can remux or transcode compatible sources when active.";
     default:
       return (
         detail.message ||
@@ -289,8 +304,10 @@ function PlayerControls({
 
 function PlayerStatus({
   reason,
+  stream,
 }: {
   reason: BufferingReason;
+  stream: StreamSource;
 }) {
   const canPlay = useMediaState("canPlay");
   const paused = useMediaState("paused");
@@ -299,24 +316,38 @@ function PlayerStatus({
   const downloadSpeed = useTorrentStore(
     (state) => state.metrics.downloadSpeed,
   );
+  const nativeTransport = useTorrentStore(
+    (state) => state.metrics.transportMode === "native-bridge",
+  );
+  const hlsPlayback = stream.playbackKind === "hls";
 
   if ((canPlay && !reason && !seeking) || (canPlay && paused && !seeking)) {
     return null;
   }
 
   const eyebrow = seeking
-    ? "SEEKING BYTE RANGE"
+    ? hlsPlayback
+      ? "SEEKING HLS WINDOW"
+      : "SEEKING BYTE RANGE"
     : !canPlay
       ? "PRIMING STREAM"
       : reason === "stalled"
-        ? "RANGE REQUEST STALLED"
+        ? hlsPlayback
+          ? "HLS SEGMENT STALLED"
+          : "RANGE REQUEST STALLED"
         : "BUFFERING PIECES";
   const title = seeking
-    ? "Jumping to the requested pieces"
+    ? hlsPlayback
+      ? "Moving within the available HLS window"
+      : "Jumping to the requested pieces"
     : !peers
-      ? "Negotiating a WebRTC route"
+      ? nativeTransport
+        ? "Waiting for a native swarm peer"
+        : "Negotiating a WebRTC route"
       : reason === "stalled"
-        ? "Waiting on this exact byte range"
+        ? hlsPlayback
+          ? "Waiting for the next local HLS segment"
+          : "Waiting on this exact byte range"
         : !canPlay
           ? "Building the first playable buffer"
           : "Fetching the next contiguous pieces";
@@ -558,9 +589,26 @@ export function RetroPlayer({
   const handlePlaybackError = useCallback(
     (detail: MediaErrorDetail) => {
       setBufferingReason(null);
-      onPlaybackError(playbackErrorMessage(detail));
+      onPlaybackError(playbackErrorMessage(detail, stream.playbackKind));
     },
-    [onPlaybackError],
+    [onPlaybackError, stream.playbackKind],
+  );
+
+  const handleProviderChange = useCallback(
+    (provider: MediaProviderAdapter | null) => {
+      if (!isHLSProvider(provider)) return;
+      // A torrent-backed manifest can legitimately wait while its first
+      // contiguous media range arrives. hls.js defaults are tuned for an HTTP
+      // origin that already has a manifest, so give this local producer time
+      // to build the initial live window without declaring a fatal error.
+      provider.config = {
+        manifestLoadingTimeOut: 120_000,
+        manifestLoadingMaxRetry: 12,
+        manifestLoadingRetryDelay: 1_000,
+        manifestLoadingMaxRetryTimeout: 15_000,
+      };
+    },
+    [],
   );
 
   useEffect(() => {
@@ -658,13 +706,14 @@ export function RetroPlayer({
         className="retro-media-player"
         title={stream.file.name}
         ariaLabel={"NerdTorrentPlayer: " + stream.file.name}
-        src={{ src: stream.url, type: stream.mime as "video/mp4" }}
+        src={{ src: stream.url, type: stream.mime } as MediaSrc}
         viewType={stream.file.category === "audio" ? "audio" : "video"}
-        streamType="on-demand"
+        streamType={stream.streamType ?? "on-demand"}
         preload="metadata"
         playsInline
         keyDisabled
         onLoadStart={handleLoadStart}
+        onProviderChange={handleProviderChange}
         onLoadedMetadata={() => void loadResume()}
         onCanPlay={() => setBufferingReason(null)}
         onPlaying={() => setBufferingReason(null)}
@@ -695,6 +744,7 @@ export function RetroPlayer({
         <Captions className="player-captions" />
         <PlayerStatus
           reason={bufferingReason}
+          stream={stream}
         />
 
         {resumeRecord && !resumeDismissed ? (

@@ -244,10 +244,12 @@ function CompatibilityBadge({
 
 function PeerNotice({
   message,
+  nativeTransport,
   onRetry,
   onDismiss,
 }: {
   message: string;
+  nativeTransport?: boolean;
   onRetry(): void;
   onDismiss(): void;
 }) {
@@ -264,20 +266,25 @@ function PeerNotice({
       </span>
       <div>
         <span className="peer-notice-kicker">HANDSHAKE PENDING</span>
-        <strong>No browser-compatible peer has answered yet</strong>
+        <strong>
+          {nativeTransport
+            ? "No conventional payload peer has answered yet"
+            : "No browser-compatible peer has answered yet"}
+        </strong>
         <p>{message}</p>
         <small>
-          This is usually a swarm compatibility issue, not a failure in your
-          browser.
+          {nativeTransport
+            ? "The localhost bridge keeps native tracker and peer discovery active."
+            : "This is usually a swarm compatibility issue, not a failure in your browser."}
         </small>
       </div>
       <div className="inline-actions">
         <button className="mini-button active" type="button" onClick={onRetry}>
           <RefreshCw aria-hidden="true" size={14} />
-          Refresh trackers
+          {nativeTransport ? "Restart native session" : "Refresh trackers"}
         </button>
         <button className="mini-button" type="button" onClick={onDismiss}>
-          Wait in background
+          Keep listening
         </button>
       </div>
     </motion.div>
@@ -322,6 +329,7 @@ function HomeStage({
   const [bootSeconds, setBootSeconds] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const reduceMotion = useReducedMotion();
+  const metrics = useTorrentStore((state) => state.metrics);
   const loading =
     phase === "initializing" || phase === "metadata" || phase === "waiting";
 
@@ -376,23 +384,86 @@ function HomeStage({
 
   const activeBootStep =
     phase === "initializing" ? 1 : phase === "metadata" ? 2 : 3;
+  const sourceTransports = metrics.sourceTransports;
+  const sourceWssTrackers = sourceTransports?.wssTrackers ?? 0;
+  const sourceNonWssTrackers = sourceTransports
+    ? sourceTransports.udpTrackers +
+      sourceTransports.httpTrackers +
+      sourceTransports.otherTrackers
+    : 0;
+  const sourceWebSeeds = sourceTransports?.webSeeds ?? 0;
+  const sourceExactSources = sourceTransports?.exactSources ?? 0;
+  const trackerRoutes = metrics.trackerCount ?? 0;
+  const responsiveTrackers = metrics.responsiveTrackers ?? 0;
+  const peerCandidates = metrics.trackerPeerCandidates ?? 0;
+  const reportedPopulation = metrics.reportedSwarmPopulation ?? 0;
+  const reannounceAttempts = metrics.reannounceAttempts ?? 0;
+  const reannounceLimit = metrics.reannounceLimit ?? 3;
+  const nativeTransport = metrics.transportMode === "native-bridge";
+  const discoveryStatus =
+    phase === "initializing"
+      ? nativeTransport
+        ? "Preparing localhost native transport"
+        : "Preparing browser transport"
+      : phase === "metadata"
+        ? nativeTransport
+          ? `Querying ${sourceNonWssTrackers} conventional tracker route${sourceNonWssTrackers === 1 ? "" : "s"}`
+          : trackerRoutes
+          ? `Querying ${trackerRoutes} secure tracker route${trackerRoutes === 1 ? "" : "s"}`
+          : "No secure tracker route is available yet"
+        : nativeTransport
+          ? metrics.peers
+            ? `${metrics.peers} native peer${metrics.peers === 1 ? "" : "s"} connected`
+            : "Native tracker and DHT discovery active"
+          : responsiveTrackers
+          ? `${responsiveTrackers}/${trackerRoutes} trackers responded · ${peerCandidates} peer offers delivered`
+          : reannounceAttempts >= reannounceLimit
+            ? `No tracker response after ${reannounceAttempts} refresh requests`
+            : `Waiting · ${responsiveTrackers}/${trackerRoutes} trackers responded`;
+  const traceStatus =
+    phase === "initializing"
+      ? "starting"
+      : metrics.peers
+        ? "connected"
+        : phase === "waiting"
+          ? "waiting"
+          : "querying";
   const bootLog =
     phase === "initializing"
-      ? [
-          "source.signature ........ valid",
-          "service-worker.bridge ... mounting",
-          "peer-engine ............. warming up",
-        ]
-      : phase === "metadata"
+      ? nativeTransport
         ? [
-            "service-worker.bridge ... online",
-            "tracker.mesh ........... querying WSS endpoints",
-            "metadata.exchange ...... awaiting handshake",
+            "bridge.capability ...... verified",
+            "native.session ......... authorizing",
+            "torrent.engine ......... initializing",
           ]
         : [
-            "tracker.mesh ........... retry cycle active",
-            "webrtc.transport ....... scanning compatible peers",
-            "metadata.exchange ...... still listening",
+            "source.transport ........ inspecting",
+            "service-worker.bridge ... starting",
+            "peer-engine ............. initializing",
+          ]
+      : phase === "metadata"
+        ? nativeTransport
+          ? [
+              `source.trackers ......... ${sourceNonWssTrackers} native / ${sourceWssTrackers} WSS`,
+              "native.discovery ........ tracker + peer search",
+              `swarm.peers ............. ${metrics.peers} connected`,
+            ]
+          : [
+              `source.trackers ......... ${sourceWssTrackers} WSS / ${sourceNonWssTrackers} non-WSS`,
+              `browser.routes .......... ${trackerRoutes} secure tracker${trackerRoutes === 1 ? "" : "s"}`,
+              `metadata.bootstrap ...... ${sourceWebSeeds} web seed${sourceWebSeeds === 1 ? "" : "s"} / ${sourceExactSources} exact source${sourceExactSources === 1 ? "" : "s"}`,
+            ]
+        : nativeTransport
+          ? [
+              `native.peers ............ ${metrics.peers} connected`,
+              `torrent.ingress ......... ${formatSpeed(metrics.downloadSpeed)}`,
+              `verified.bytes .......... ${formatBytes(metrics.downloaded)}`,
+            ]
+          : [
+            `tracker.responses ....... ${responsiveTrackers}/${trackerRoutes}`,
+            `tracker.peer-offers ..... ${peerCandidates} delivered`,
+            `swarm.population ........ ${reportedPopulation} reported`,
+            `refresh.requests ........ ${reannounceAttempts}/${reannounceLimit}`,
           ];
 
   if (loading) {
@@ -437,8 +508,14 @@ function HomeStage({
               <span className="eyebrow">NERDTORRENT CORE</span>
               <h1 id="loading-title">{phaseMessage}</h1>
               <p>
-                Establishing a browser-native peer path. Keep this tab focused
-                while secure trackers exchange WebRTC handshakes.
+                {nativeTransport
+                  ? `The private localhost bridge is using the source's UDP/TCP routes and native peers. ${sourceNonWssTrackers} conventional tracker route${sourceNonWssTrackers === 1 ? " is" : "s are"} available to this session.`
+                  : "This page can use WSS trackers, WebRTC peers, web seeds, and exact metadata sources. "}
+                {!nativeTransport && sourceNonWssTrackers
+                  ? `${sourceNonWssTrackers} declared non-WSS tracker route${sourceNonWssTrackers === 1 ? "" : "s"} require a native torrent client and are not opened here.`
+                  : !nativeTransport
+                    ? "Live route counts appear below as each browser transport becomes available."
+                    : null}
               </p>
 
               <div className="boot-progress" role="status">
@@ -460,16 +537,16 @@ function HomeStage({
                     }}
                   />
                 </span>
-                <output>Discovery active</output>
+                <output>{discoveryStatus}</output>
               </div>
             </div>
 
-            <div className="boot-diagnostics" aria-hidden="true">
+            <div className="boot-diagnostics">
               <div className="diagnostic-heading">
                 <span>
                   <Braces size={13} /> live.trace
                 </span>
-                <span className="trace-status">streaming</span>
+                <span className="trace-status">{traceStatus}</span>
               </div>
               <div className="terminal-log">
                 {bootLog.map((line, index) => (
@@ -487,9 +564,19 @@ function HomeStage({
                 </code>
               </div>
               <div className="protocol-badges">
-                <span>WSS TRACKERS</span>
-                <span>WEBRTC DATA</span>
-                <span>RANGE STREAM</span>
+                {nativeTransport ? (
+                  <>
+                    <span>NATIVE TRACKERS</span>
+                    <span>TCP PEERS</span>
+                    <span>LOCAL MEDIA</span>
+                  </>
+                ) : (
+                  <>
+                    <span>{trackerRoutes} WSS ROUTES</span>
+                    <span>{sourceWebSeeds} WEB SEEDS</span>
+                    <span>{sourceExactSources} EXACT SOURCES</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -497,9 +584,22 @@ function HomeStage({
           <ol className="boot-steps" aria-label="Connection progress">
             {[
               ["Validate source", "Magnet / torrent parsed"],
-              ["Launch engine", "Streaming bridge online"],
-              ["Query tracker mesh", "Parallel secure endpoints"],
-              ["Resolve metadata", "Decode file manifest"],
+              [
+                "Launch engine",
+                nativeTransport ? "Native bridge online" : "Streaming bridge online",
+              ],
+              [
+                nativeTransport ? "Query native routes" : "Query browser routes",
+                nativeTransport
+                  ? `${sourceNonWssTrackers} conventional tracker routes`
+                  : `${trackerRoutes} secure tracker routes`,
+              ],
+              [
+                "Resolve metadata",
+                nativeTransport
+                  ? `${metrics.peers} native peers connected`
+                  : `${peerCandidates} tracker peer offers delivered`,
+              ],
             ].map(([label, detail], index) => {
               const step = index;
               const phaseStep = activeBootStep;
@@ -525,6 +625,7 @@ function HomeStage({
           {peerNotice ? (
             <PeerNotice
               message={peerNotice}
+              nativeTransport={nativeTransport}
               onRetry={onRetry}
               onDismiss={onDismissPeerNotice}
             />
@@ -568,8 +669,8 @@ function HomeStage({
         <motion.p
           variants={{ hidden: { opacity: 0, y: 10 }, visible: { opacity: 1, y: 0 } }}
         >
-          Fast-start, serverless torrent streaming for people who want the
-          controls, the peer graph, and every useful byte of telemetry.
+          Fast-start, local-first torrent streaming with browser WebRTC and an
+          optional private bridge for conventional swarms.
         </motion.p>
         <motion.div
           className="hero-proof-row"
@@ -659,7 +760,8 @@ function HomeStage({
             </p>
           ) : (
             <p className="field-help" id="magnet-help">
-              Parsed locally. Your media is never relayed through an app server.
+              Parsed locally. On localhost, the private bridge can reach UDP/TCP
+              peers without uploading your media to an app server.
             </p>
           )}
           <label
@@ -742,7 +844,7 @@ function HomeStage({
 
         <button className="browser-limit" type="button" onClick={onWhy}>
           <Radio aria-hidden="true" size={15} />
-          Browser transport reaches WebTorrent / WebRTC peers only.
+          Browser WebRTC plus an optional localhost native bridge.
           <span>Inspect the protocol</span>
         </button>
       </motion.div>
@@ -1370,12 +1472,30 @@ interface InspectorContentProps {
 function StreamInspector({ onRetry }: { onRetry(): void }) {
   const metrics = useTorrentStore((state) => state.metrics);
   const metricSamples = useTorrentStore((state) => state.metricSamples);
+  const stream = useTorrentStore((state) => state.stream);
   const recentSamples = metricSamples.slice(-32);
   const chartPeak = Math.max(
     1,
     ...recentSamples.map((sample) => sample.downloadSpeed),
   );
   const selectedProgress = metrics.selectedFileProgress;
+  const nativeTransport = metrics.transportMode === "native-bridge";
+  const sourceTransports = metrics.sourceTransports;
+  const nativeTrackerRoutes = sourceTransports
+    ? sourceTransports.wssTrackers +
+      sourceTransports.udpTrackers +
+      sourceTransports.httpTrackers +
+      sourceTransports.otherTrackers
+    : 0;
+  const transportLabel = !nativeTransport
+    ? "WEBRTC / WSS"
+    : stream?.playbackKind === "hls"
+      ? "NATIVE / HLS"
+      : stream?.playbackKind === "remux"
+        ? "NATIVE / MP4 REMUX"
+        : stream?.playbackKind === "transcode"
+          ? "NATIVE / TRANSCODE"
+          : "NATIVE / HTTP RANGE";
 
   return (
     <div className="inspector-content stream-panel">
@@ -1386,28 +1506,57 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
       <div className="stream-health">
         <span className={metrics.peers ? "online" : "searching"}>
           <i aria-hidden="true" />
-          {metrics.peers ? "WebRTC transport online" : "Tracker mesh scanning"}
+          {metrics.peers
+            ? nativeTransport
+              ? "Native peer transport online"
+              : "WebRTC transport online"
+            : nativeTransport
+              ? "Native peer discovery active"
+              : "Tracker mesh scanning"}
         </span>
         <strong>{metrics.peers}</strong>
-        <small>{metrics.peers === 1 ? "connected route" : "connected routes"}</small>
+        <small>{metrics.peers === 1 ? "connected peer" : "connected peers"}</small>
       </div>
       <div className="peer-topology" aria-label="Peer topology">
-        <span>
-          <small>WebRTC</small>
-          <strong>{metrics.connectedWebRtcPeers ?? 0}</strong>
-        </span>
-        <span>
-          <small>Web seeds</small>
-          <strong>{metrics.connectedWebSeeds ?? 0}</strong>
-        </span>
-        <span>
-          <small>Pulling data</small>
-          <strong>{metrics.activeDownloadPeers ?? 0}</strong>
-        </span>
-        <span>
-          <small>Unchoked</small>
-          <strong>{metrics.unchokedPeers ?? 0}</strong>
-        </span>
+        {nativeTransport ? (
+          <>
+            <span>
+              <small>Native peers</small>
+              <strong>{metrics.peers}</strong>
+            </span>
+            <span>
+              <small>UDP trackers</small>
+              <strong>{sourceTransports?.udpTrackers ?? 0}</strong>
+            </span>
+            <span>
+              <small>HTTP trackers</small>
+              <strong>{sourceTransports?.httpTrackers ?? 0}</strong>
+            </span>
+            <span>
+              <small>Source trackers</small>
+              <strong>{nativeTrackerRoutes}</strong>
+            </span>
+          </>
+        ) : (
+          <>
+            <span>
+              <small>WebRTC</small>
+              <strong>{metrics.connectedWebRtcPeers ?? 0}</strong>
+            </span>
+            <span>
+              <small>Web seeds</small>
+              <strong>{metrics.connectedWebSeeds ?? 0}</strong>
+            </span>
+            <span>
+              <small>Pulling data</small>
+              <strong>{metrics.activeDownloadPeers ?? 0}</strong>
+            </span>
+            <span>
+              <small>Unchoked</small>
+              <strong>{metrics.unchokedPeers ?? 0}</strong>
+            </span>
+          </>
+        )}
       </div>
 
       <section className="throughput-chart" aria-label="Recent download throughput">
@@ -1473,7 +1622,9 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
             <Network aria-hidden="true" size={14} />
             Transport
           </dt>
-          <dd>WEBRTC / WSS</dd>
+          <dd>
+            {transportLabel}
+          </dd>
         </div>
       </dl>
       <div className="timing-grid" aria-label="Connection timing">
@@ -1504,17 +1655,52 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
           <strong>{formatBytes(metrics.received ?? metrics.downloaded)}</strong>
         </span>
         <span>
-          <small>Announces</small>
-          <strong>{metrics.trackerAnnounces ?? 0}</strong>
+          <small>
+            {metrics.transportMode === "native-bridge"
+              ? "Native peers"
+              : "Tracker replies"}
+          </small>
+          <strong>
+            {metrics.transportMode === "native-bridge"
+              ? metrics.peers
+              : metrics.trackerAnnounces ?? 0}
+          </strong>
         </span>
         <span>
-          <small>Reannounces</small>
-          <strong>{metrics.reannounceAttempts ?? 0}</strong>
+          <small>
+            {metrics.transportMode === "native-bridge"
+              ? "Native routes"
+              : "Peer offers"}
+          </small>
+          <strong>
+            {metrics.transportMode === "native-bridge"
+              ? (metrics.sourceTransports?.udpTrackers ?? 0) +
+                (metrics.sourceTransports?.httpTrackers ?? 0) +
+                (metrics.sourceTransports?.otherTrackers ?? 0)
+              : metrics.trackerPeerCandidates ?? 0}
+          </strong>
         </span>
-        <span>
-          <small>Route warnings</small>
-          <strong>{metrics.trackerWarnings ?? 0}</strong>
-        </span>
+        {nativeTransport ? (
+          <span>
+            <small>Session warnings</small>
+            <strong>{metrics.sessionWarnings ?? 0}</strong>
+          </span>
+        ) : (
+          <>
+            <span>
+              <small>Reported population</small>
+              <strong>{metrics.reportedSwarmPopulation ?? 0}</strong>
+            </span>
+            <span>
+              <small>Reannounces</small>
+              <strong>{metrics.reannounceAttempts ?? 0}</strong>
+            </span>
+            <span>
+              <small>Route warnings</small>
+              <strong>{metrics.trackerWarnings ?? 0}</strong>
+            </span>
+          </>
+        )}
         <span>
           <small>Stalled</small>
           <strong>{formatDurationMs(metrics.stalledForMs ?? 0)}</strong>
@@ -1561,6 +1747,34 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
               ? "Official public WebTorrent fallbacks active"
               : "Using the torrent's declared tracker policy"}
           </p>
+          {metrics.sourceTransports ? (
+            <p className="tracker-policy">
+              Source profile: {metrics.sourceTransports.wssTrackers} WSS ·{" "}
+              {metrics.sourceTransports.udpTrackers +
+                metrics.sourceTransports.httpTrackers +
+                metrics.sourceTransports.otherTrackers}{" "}
+              non-WSS · {metrics.sourceTransports.webSeeds} web seeds ·{" "}
+              {metrics.sourceTransports.exactSources} exact sources
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+      {metrics.transportMode === "native-bridge" && metrics.sourceTransports ? (
+        <section className="tracker-matrix" aria-label="Native bridge transport">
+          <div>
+            <span>NATIVE BRIDGE</span>
+            <strong>{metrics.peers} peers connected</strong>
+          </div>
+          <p className="tracker-policy">
+            Localhost transport active: {metrics.sourceTransports.udpTrackers} UDP ·{" "}
+            {metrics.sourceTransports.httpTrackers} HTTP(S) ·{" "}
+            {metrics.sourceTransports.wssTrackers} WSS source trackers. DHT and
+            conventional TCP peers are also available when the swarm advertises them.
+            Converted playback is served only to this local app.
+          </p>
+          {metrics.lastWarning ? (
+            <p className="tracker-policy">Latest bridge warning: {metrics.lastWarning}</p>
+          ) : null}
         </section>
       ) : null}
       {(metrics.recoverableWebRtcErrors ?? 0) > 0 ? (
@@ -1578,7 +1792,7 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
       ) : null}
       <button className="secondary-button full-width" type="button" onClick={onRetry}>
         <RefreshCw aria-hidden="true" size={15} />
-        Refresh peer routes
+        {nativeTransport ? "Restart native session" : "Refresh peer routes"}
       </button>
       <div className="cast-note">
         <MonitorPlay aria-hidden="true" size={18} />
@@ -1922,7 +2136,9 @@ function WatchStage({
               onPlaybackError={(message) =>
                 setError(
                   message +
-                    " This app streams the original file and does not transcode unsupported codecs.",
+                    (stream.playbackKind === "direct"
+                      ? " Direct browser mode streams the original file and cannot convert unsupported codecs."
+                      : ""),
                 )
               }
             />
@@ -2170,7 +2386,9 @@ export function TorrentPlayerApp() {
   ) => {
     const { preferredFilePath, persistSource = false } = options;
     resetSession();
-    useTorrentStore.getState().setPhase("initializing", "Starting the browser P2P engine...");
+    useTorrentStore
+      .getState()
+      .setPhase("initializing", "Selecting the best local P2P transport...");
     void torrentClient.load(source, {
       onPhase: (nextPhase, message) =>
         useTorrentStore.getState().setPhase(nextPhase, message),
@@ -2514,7 +2732,7 @@ export function TorrentPlayerApp() {
           </span>
           <span>
             <strong>NerdTorrentPlayer</strong>
-            <small>Browser-native P2P streaming</small>
+            <small>Local-first hybrid P2P streaming</small>
           </span>
         </div>
         <div className="footer-safety">
@@ -2558,7 +2776,7 @@ export function TorrentPlayerApp() {
 
       <Modal
         open={whyOpen}
-        title="How browser mode works"
+        title="How transport modes work"
         onClose={() => setWhyOpen(false)}
       >
         <div className="explain-grid">
@@ -2567,8 +2785,8 @@ export function TorrentPlayerApp() {
             <div>
               <strong>WebRTC peers only</strong>
               <p>
-                Browsers cannot open normal BitTorrent TCP or UDP connections.
-                The torrent must have peers that support WebTorrent over WebRTC.
+                Hosted browser mode uses WSS trackers, WebRTC peers, web seeds,
+                and exact metadata sources without a torrent backend.
               </p>
             </div>
           </article>
@@ -2585,22 +2803,22 @@ export function TorrentPlayerApp() {
           <article>
             <ShieldCheck aria-hidden="true" size={20} />
             <div>
-              <strong>No application backend</strong>
+              <strong>Private localhost bridge</strong>
               <p>
-                Torrent metadata and media stay in this browser. Raw sources
-                are retained only when you explicitly save them to the private
-                on-device library.
+                On localhost, the optional helper unlocks UDP trackers, DHT, and
+                conventional TCP peers. It binds only to 127.0.0.1 and requires
+                short-lived capability tokens from this app.
               </p>
             </div>
           </article>
           <article>
             <AlertTriangle aria-hidden="true" size={20} />
             <div>
-              <strong>Original codecs</strong>
+              <strong>Browser-safe playback</strong>
               <p>
-                NerdTorrentPlayer does not transcode. MP4 H.264/AAC and WebM
-                are the safest; MKV, AVI, HEVC, and unusual audio codecs may not
-                play.
+                Native MP4/WebM files keep byte-range seeking. MKV video uses a
+                local sliding HLS window when ffmpeg is available; copied source
+                codecs must still be supported by the browser.
               </p>
             </div>
           </article>

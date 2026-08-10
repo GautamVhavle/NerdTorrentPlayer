@@ -6,6 +6,7 @@ import {
   getParsedTorrentFallbacks,
   inspectTorrentPrivacy,
   prepareBrowserTorrentId,
+  shouldPreferNativeTransport,
   uniqueSecureTrackers,
 } from "../src/torrent/tracker-pool.ts";
 
@@ -41,6 +42,14 @@ test("keeps only a bounded set of usable browser trackers", () => {
   assert.deepEqual(prepared.trackers.slice(-3), [
     ...OFFICIAL_WEBTORRENT_TRACKERS,
   ]);
+  assert.deepEqual(prepared.sourceTransports, {
+    wssTrackers: 10,
+    udpTrackers: 1,
+    httpTrackers: 1,
+    otherTrackers: 0,
+    webSeeds: 1,
+    exactSources: 1,
+  });
 
   const sanitized = new URL(prepared.value);
   assert.equal(sanitized.searchParams.get("dn"), "Sintel");
@@ -75,6 +84,110 @@ test("normalizes and deduplicates secure trackers without mutating torrent bytes
   assert.strictEqual(prepared.value, bytes);
   assert.deepEqual(prepared.trackers, []);
   assert.equal(prepared.publicFallbacksAdded, false);
+  assert.deepEqual(prepared.sourceTransports, {
+    wssTrackers: 0,
+    udpTrackers: 0,
+    httpTrackers: 0,
+    otherTrackers: 0,
+    webSeeds: 0,
+    exactSources: 0,
+  });
+});
+
+test("reports native-only source routes separately from browser fallbacks", () => {
+  const params = new URLSearchParams({
+    xt: "urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10",
+  });
+  params.append("tr", "udp://tracker.example:1337/announce");
+  params.append("tr", "udp://tracker.example:1337/announce");
+  params.append("tr", "https://tracker.example/announce");
+  params.append("tr", "ws://insecure.example/announce");
+
+  const prepared = prepareBrowserTorrentId(`magnet:?${params}`);
+
+  assert.deepEqual(prepared.trackers, [...OFFICIAL_WEBTORRENT_TRACKERS]);
+  assert.deepEqual(prepared.sourceTransports, {
+    wssTrackers: 0,
+    udpTrackers: 1,
+    httpTrackers: 1,
+    otherTrackers: 1,
+    webSeeds: 0,
+    exactSources: 0,
+  });
+});
+
+test("prefers native transport only for conventional-only tracker sources", () => {
+  const hash = "08ada5a7a6183aae1e09d831df6748d566095a10";
+  const magnet = (...parameters) => {
+    const params = new URLSearchParams({ xt: `urn:btih:${hash}` });
+    for (const [key, value] of parameters) params.append(key, value);
+    return `magnet:?${params}`;
+  };
+
+  assert.equal(
+    shouldPreferNativeTransport(
+      magnet(["tr", "udp://tracker.example:1337/announce"]),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldPreferNativeTransport(
+      magnet(["tr", "https://tracker.example/announce"]),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldPreferNativeTransport(
+      magnet(["tr", "wss://tracker.example/announce"]),
+    ),
+    false,
+  );
+  assert.equal(
+    shouldPreferNativeTransport(
+      magnet(
+        ["tr", "udp://tracker.example:1337/announce"],
+        ["tr", "wss://tracker.example/announce"],
+      ),
+    ),
+    false,
+  );
+  assert.equal(
+    shouldPreferNativeTransport(
+      magnet(
+        ["tr", "wss://tracker.example/announce"],
+        ["ws", "https://seed.example/files/"],
+        ["xs", "https://seed.example/source.torrent"],
+      ),
+    ),
+    false,
+  );
+  assert.equal(shouldPreferNativeTransport(magnet()), false);
+  assert.equal(shouldPreferNativeTransport(new Uint8Array([1, 2, 3])), false);
+});
+
+test("counts only usable HTTP source hints and includes acceptable sources", () => {
+  const params = new URLSearchParams({
+    xt: "urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10",
+  });
+  params.append("ws", "https://seed.example/files/");
+  params.append("as", "https://mirror.example/media.mp4");
+  params.append("as", "https://mirror.example/media.mp4#duplicate");
+  params.append("ws", "ftp://seed.example/files/");
+  params.append("ws", "not-a-url");
+  params.append("xs", "https://metadata.example/source.torrent");
+  params.append("xs", "data:application/x-bittorrent,invalid");
+  params.append("tr", "not-a-tracker-url");
+
+  const prepared = prepareBrowserTorrentId(`magnet:?${params}`);
+
+  assert.deepEqual(prepared.sourceTransports, {
+    wssTrackers: 0,
+    udpTrackers: 0,
+    httpTrackers: 0,
+    otherTrackers: 0,
+    webSeeds: 2,
+    exactSources: 1,
+  });
 });
 
 test("never injects public fallbacks into a parsed private torrent", () => {

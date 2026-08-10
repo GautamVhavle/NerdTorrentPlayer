@@ -87,7 +87,11 @@ export function getCategory(extension: string): FileCategory {
 }
 
 export function getMime(extension: string, reported?: string): string {
-  return reported || MIME_BY_EXTENSION[extension] || "application/octet-stream";
+  // WebTorrent's generic file type is frequently `application/octet-stream`
+  // (and some runtimes guess `video/mp4`) even when the filename identifies a
+  // different container. Prefer the deterministic extension mapping so the
+  // player or native bridge can choose the correct playback path.
+  return MIME_BY_EXTENSION[extension] || reported || "application/octet-stream";
 }
 
 export function getCompatibility(
@@ -200,4 +204,3 @@ export function getLanguageFromFilename(name: string): {
     ? { code: match[0], label: match[1] }
     : { code: "und", label: "Subtitle" };
 }
-

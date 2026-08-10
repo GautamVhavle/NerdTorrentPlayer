@@ -1,9 +1,11 @@
 import { mapAndSortFiles } from "./torrent-files";
+import { LocalTorrentBridgeClient } from "./local-bridge-client";
 import {
   OFFICIAL_WEBTORRENT_TRACKERS,
   getParsedTorrentFallbacks,
   inspectTorrentPrivacy,
   prepareBrowserTorrentId,
+  shouldPreferNativeTransport,
   uniqueSecureTrackers,
 } from "./tracker-pool";
 import type { PreparedBrowserTorrentId } from "./tracker-pool";
@@ -20,11 +22,13 @@ import type {
   TorrentMetrics,
   TorrentServiceHandlers,
   TorrentSource,
+  TorrentSourceTransports,
   TrackerDiagnostic,
 } from "./torrent-types";
 
 const MAGNET_PATTERN = /^magnet:\?(.+&)?xt=urn:btih:[a-z0-9]{32,40}(&|$)/i;
 const MAX_REANNOUNCE_ATTEMPTS = 3;
+const MAX_TRACKER_BIND_ATTEMPTS = 8;
 const REANNOUNCE_BACKOFF_MS = [12_000, 30_000, 75_000] as const;
 const MIN_REANNOUNCE_GAP_MS = 10_000;
 const NO_PEER_NOTICE_GAP_MS = 20_000;
@@ -124,6 +128,7 @@ async function prepareTorrentIdForLoad(
     value,
     trackers,
     publicFallbacksAdded: trackers.length > 0,
+    sourceTransports: prepared.sourceTransports,
   };
 }
 
@@ -171,6 +176,7 @@ class TorrentClientService {
   private trackerBinding: {
     tracker: RuntimeTrackerClient;
     onUpdate: (...args: unknown[]) => void;
+    onPeer: (...args: unknown[]) => void;
   } | null = null;
   private trackerDiagnostics = new Map<string, TrackerDiagnostic>();
   private loadStartedAt = 0;
@@ -182,13 +188,23 @@ class TorrentClientService {
   private previousDownloaded = 0;
   private peakDownloadSpeed = 0;
   private trackerAnnounces = 0;
+  private trackerPeerCandidates = 0;
   private trackerWarnings = 0;
   private recoverableWebRtcErrors = 0;
   private publicTrackerFallbacks = false;
   private reannounceAttempts = 0;
+  private trackerBindAttempts = 0;
   private lastReannounceAt = 0;
   private lastNoPeerNoticeAt = 0;
   private lastWarning: string | null = null;
+  private sourceTransports: TorrentSourceTransports = {
+    wssTrackers: 0,
+    udpTrackers: 0,
+    httpTrackers: 0,
+    otherTrackers: 0,
+    webSeeds: 0,
+    exactSources: 0,
+  };
 
   private async ensureClient(): Promise<RuntimeWebTorrentClient> {
     if (this.client) return this.client;
@@ -292,6 +308,7 @@ class TorrentClientService {
     this.resetSessionDiagnostics(
       prepared.trackers,
       prepared.publicFallbacksAdded,
+      prepared.sourceTransports,
     );
     handlers.onPhase("initializing", "Starting the browser P2P engine...");
 
@@ -480,7 +497,16 @@ class TorrentClientService {
         }));
       const timeRemaining = torrent.timeRemaining;
       const ratio = torrent.ratio;
+      const reportedTrackerSeeders = trackers.reduce(
+        (total, tracker) => total + (tracker.seeders ?? 0),
+        0,
+      );
+      const reportedTrackerLeechers = trackers.reduce(
+        (total, tracker) => total + (tracker.leechers ?? 0),
+        0,
+      );
       const metrics: TorrentMetrics = {
+        transportMode: "browser",
         peers: torrent.numPeers || 0,
         downloadSpeed: torrent.downloadSpeed || 0,
         uploadSpeed: torrent.uploadSpeed || 0,
@@ -508,10 +534,19 @@ class TorrentClientService {
           (tracker) => tracker.status === "responding",
         ).length,
         trackerAnnounces: this.trackerAnnounces,
+        reportedTrackerSeeders,
+        reportedTrackerLeechers,
+        reportedSwarmPopulation:
+          reportedTrackerSeeders + reportedTrackerLeechers,
+        trackerPeerCandidates: this.trackerPeerCandidates,
         trackerWarnings: this.trackerWarnings,
         recoverableWebRtcErrors: this.recoverableWebRtcErrors,
         publicTrackerFallbacks: this.publicTrackerFallbacks,
         reannounceAttempts: this.reannounceAttempts,
+        reannounceLimit: MAX_REANNOUNCE_ATTEMPTS,
+        trackerBindAttempts: this.trackerBindAttempts,
+        trackerBindLimit: MAX_TRACKER_BIND_ATTEMPTS,
+        sourceTransports: { ...this.sourceTransports },
         peakDownloadSpeed: this.peakDownloadSpeed,
         timeToMetadataMs:
           this.metadataReceivedAt === null
@@ -543,6 +578,7 @@ class TorrentClientService {
   private resetSessionDiagnostics(
     trackers: string[],
     publicTrackerFallbacks: boolean,
+    sourceTransports: TorrentSourceTransports,
   ): void {
     this.loadStartedAt = Date.now();
     this.metadataReceivedAt = null;
@@ -553,13 +589,16 @@ class TorrentClientService {
     this.previousDownloaded = 0;
     this.peakDownloadSpeed = 0;
     this.trackerAnnounces = 0;
+    this.trackerPeerCandidates = 0;
     this.trackerWarnings = 0;
     this.recoverableWebRtcErrors = 0;
     this.publicTrackerFallbacks = publicTrackerFallbacks;
     this.reannounceAttempts = 0;
+    this.trackerBindAttempts = 0;
     this.lastReannounceAt = 0;
     this.lastNoPeerNoticeAt = 0;
     this.lastWarning = null;
+    this.sourceTransports = { ...sourceTransports };
     this.trackerDiagnostics.clear();
     this.mergeTrackerDiagnostics(trackers);
   }
@@ -585,7 +624,10 @@ class TorrentClientService {
     if (token !== this.loadToken || this.torrent !== torrent) return false;
     const tracker = torrent.discovery?.tracker;
     if (!tracker || tracker.destroyed) return false;
-    if (this.trackerBinding?.tracker === tracker) return true;
+    if (this.trackerBinding?.tracker === tracker) {
+      this.trackerBindAttempts = 0;
+      return true;
+    }
 
     this.unbindTrackerDiagnostics();
     const onUpdate = (...args: unknown[]) => {
@@ -607,17 +649,28 @@ class TorrentClientService {
         ? update.incomplete || 0
         : diagnostic.leechers;
     };
+    const onPeer = () => {
+      if (token !== this.loadToken || this.torrent !== torrent) return;
+      this.trackerPeerCandidates += 1;
+    };
 
     tracker.on("update", onUpdate);
-    this.trackerBinding = { tracker, onUpdate };
+    tracker.on("peer", onPeer);
+    this.trackerBinding = { tracker, onUpdate, onPeer };
+    this.trackerBindAttempts = 0;
     return true;
   }
 
   private unbindTrackerDiagnostics(): void {
     if (!this.trackerBinding) return;
-    const { tracker, onUpdate } = this.trackerBinding;
-    if (tracker.off) tracker.off("update", onUpdate);
-    else tracker.removeListener?.("update", onUpdate);
+    const { tracker, onUpdate, onPeer } = this.trackerBinding;
+    if (tracker.off) {
+      tracker.off("update", onUpdate);
+      tracker.off("peer", onPeer);
+    } else {
+      tracker.removeListener?.("update", onUpdate);
+      tracker.removeListener?.("peer", onPeer);
+    }
     this.trackerBinding = null;
   }
 
@@ -636,7 +689,8 @@ class TorrentClientService {
       this.reannounceTimer !== null ||
       torrent.destroyed ||
       torrent.numPeers > 0 ||
-      this.reannounceAttempts >= MAX_REANNOUNCE_ATTEMPTS
+      this.reannounceAttempts >= MAX_REANNOUNCE_ATTEMPTS ||
+      this.trackerBindAttempts >= MAX_TRACKER_BIND_ATTEMPTS
     ) {
       return;
     }
@@ -663,6 +717,13 @@ class TorrentClientService {
       }
 
       if (!this.bindTrackerDiagnostics(torrent, token)) {
+        this.trackerBindAttempts += 1;
+        if (this.trackerBindAttempts >= MAX_TRACKER_BIND_ATTEMPTS) {
+          this.recordWarning(
+            `Tracker diagnostics did not become available after ${MAX_TRACKER_BIND_ATTEMPTS} checks.`,
+          );
+          return;
+        }
         this.scheduleReannounce(torrent, token, 2_000);
         return;
       }
@@ -690,6 +751,7 @@ class TorrentClientService {
     if (!torrent || torrent.destroyed) return false;
     this.clearReannounceTimer();
     this.reannounceAttempts = 0;
+    this.trackerBindAttempts = 0;
     this.scheduleReannounce(torrent, this.loadToken, 0);
     return true;
   }
@@ -814,7 +876,80 @@ class TorrentClientService {
   }
 }
 
-export const torrentClient = new TorrentClientService();
+type TorrentRuntimeBackend = Pick<
+  TorrentClientService,
+  "getStream" | "readTextFile" | "retry" | "destroyCurrent" | "destroy"
+>;
+
+/**
+ * Prefer the optional native companion for conventional-only magnet sources,
+ * then fall back to the browser WebTorrent engine. Browser-native sources stay
+ * on their established WSS/WebRTC path even when the helper is running.
+ */
+class RoutedTorrentClientService {
+  private readonly browser = new TorrentClientService();
+  private readonly bridge = new LocalTorrentBridgeClient();
+  private active: TorrentRuntimeBackend | null = null;
+  private routeEpoch = 0;
+
+  async load(
+    source: TorrentSource,
+    handlers: TorrentServiceHandlers,
+  ): Promise<void> {
+    const epoch = ++this.routeEpoch;
+    await Promise.allSettled([
+      this.browser.destroyCurrent(),
+      this.bridge.destroyCurrent(),
+    ]);
+    if (epoch !== this.routeEpoch) return;
+
+    const bridged = shouldPreferNativeTransport(source.value)
+      ? await this.bridge.tryLoad(source, handlers)
+      : false;
+    if (epoch !== this.routeEpoch) {
+      if (bridged) await this.bridge.destroyCurrent();
+      return;
+    }
+    if (bridged) {
+      this.active = this.bridge;
+      return;
+    }
+
+    this.active = this.browser;
+    await this.browser.load(source, handlers);
+  }
+
+  getStream(path: string): StreamSource {
+    if (!this.active) throw new Error("No torrent session is active.");
+    return this.active.getStream(path);
+  }
+
+  readTextFile(path: string): Promise<string> {
+    if (!this.active) return Promise.reject(new Error("No torrent session is active."));
+    return this.active.readTextFile(path);
+  }
+
+  retry(): Promise<void> {
+    return this.active?.retry() || Promise.resolve();
+  }
+
+  async destroyCurrent(): Promise<void> {
+    this.routeEpoch += 1;
+    this.active = null;
+    await Promise.allSettled([
+      this.browser.destroyCurrent(),
+      this.bridge.destroyCurrent(),
+    ]);
+  }
+
+  async destroy(): Promise<void> {
+    this.routeEpoch += 1;
+    this.active = null;
+    await Promise.allSettled([this.browser.destroy(), this.bridge.destroy()]);
+  }
+}
+
+export const torrentClient = new RoutedTorrentClientService();
 
 export function sourceFromMagnet(magnet: string): TorrentSource {
   return {

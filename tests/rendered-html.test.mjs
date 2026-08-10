@@ -41,7 +41,7 @@ test("server-renders the finished torrent player landing screen", async () => {
   assert.match(html, /Initialize swarm/);
   assert.match(html, /Try Sintel demo/);
   assert.match(html, /Drop a \.torrent manifest/);
-  assert.match(html, /WebTorrent\s*\/\s*WebRTC peers only/i);
+  assert.match(html, /Browser WebRTC plus an optional localhost native bridge/i);
   assert.match(html, /Save this source in my private on-device library/i);
   assert.match(html, /Built with love/i);
   assert.match(html, /href="http:\/\/gautamvhavle\.xyz\/"/i);
@@ -75,9 +75,13 @@ test("ships the WebTorrent streaming bridge and branded social card", async () =
 });
 
 test("keeps WebTorrent browser-only and ships the optimized UI dependencies", async () => {
-  const [clientSource, packageJson, page] = await Promise.all([
+  const [clientSource, appSource, packageJson, page] = await Promise.all([
     readFile(
       new URL("../src/torrent/torrent-client.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../src/components/TorrentPlayerApp.tsx", import.meta.url),
       "utf8",
     ),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -88,6 +92,17 @@ test("keeps WebTorrent browser-only and ships the optimized UI dependencies", as
   assert.match(clientSource, /navigator\.serviceWorker\.register/);
   assert.match(clientSource, /createServer/);
   assert.match(clientSource, /deselect:\s*true/);
+  assert.match(clientSource, /MAX_TRACKER_BIND_ATTEMPTS/);
+  assert.match(
+    clientSource,
+    /trackerBindAttempts\s*>=\s*MAX_TRACKER_BIND_ATTEMPTS/,
+  );
+  assert.match(clientSource, /tracker\.on\("peer", onPeer\)/);
+  assert.match(clientSource, /reportedSwarmPopulation/);
+  assert.doesNotMatch(clientSource, /reportedPeerCandidates/);
+  assert.match(appSource, /peer offers/i);
+  assert.doesNotMatch(appSource, /<output>Discovery active<\/output>/);
+  assert.doesNotMatch(appSource, /className="trace-status">streaming/);
   assert.match(page, /TorrentPlayerApp/);
   assert.match(packageJson, /"motion"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

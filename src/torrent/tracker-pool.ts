@@ -1,3 +1,5 @@
+import type { TorrentSourceTransports } from "./torrent-types";
+
 /**
  * The secure browser trackers currently shipped by WebTorrent's official
  * create-torrent package. Browser clients cannot use UDP/TCP trackers.
@@ -14,6 +16,18 @@ export interface PreparedBrowserTorrentId {
   value: string | Uint8Array;
   trackers: string[];
   publicFallbacksAdded: boolean;
+  sourceTransports: TorrentSourceTransports;
+}
+
+function emptySourceTransports(): TorrentSourceTransports {
+  return {
+    wssTrackers: 0,
+    udpTrackers: 0,
+    httpTrackers: 0,
+    otherTrackers: 0,
+    webSeeds: 0,
+    exactSources: 0,
+  };
 }
 
 function normalizeSecureTracker(value: string): string | null {
@@ -48,6 +62,83 @@ export function uniqueSecureTrackers(
   return trackers;
 }
 
+function getSourceTransportCounts(
+  params: URLSearchParams,
+): TorrentSourceTransports {
+  const trackerSets = {
+    wssTrackers: new Set<string>(),
+    udpTrackers: new Set<string>(),
+    httpTrackers: new Set<string>(),
+    otherTrackers: new Set<string>(),
+  };
+  const webSeeds = new Set<string>();
+  const exactSources = new Set<string>();
+
+  const normalizeHttpSource = (value: string): string | null => {
+    try {
+      const url = new URL(value);
+      if (
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        !url.hostname
+      ) {
+        return null;
+      }
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return null;
+    }
+  };
+
+  for (const [rawKey, rawValue] of params) {
+    const key = rawKey.toLowerCase();
+    const value = rawValue.trim();
+    if (!value) continue;
+
+    if (key === "ws" || key === "as") {
+      const normalized = normalizeHttpSource(value);
+      if (normalized) webSeeds.add(normalized);
+      continue;
+    }
+    if (key === "xs") {
+      const normalized = normalizeHttpSource(value);
+      if (normalized) exactSources.add(normalized);
+      continue;
+    }
+    if (key !== "tr") continue;
+
+    let normalized = value;
+    let protocol = "";
+    try {
+      const url = new URL(value);
+      protocol = url.protocol.toLowerCase();
+      url.hash = "";
+      normalized = url.toString();
+    } catch {
+      continue;
+    }
+
+    if (!new URL(normalized).hostname) continue;
+
+    if (protocol === "wss:") {
+      const secureTracker = normalizeSecureTracker(value);
+      if (secureTracker) trackerSets.wssTrackers.add(secureTracker);
+    } else if (protocol === "udp:") trackerSets.udpTrackers.add(normalized);
+    else if (protocol === "http:" || protocol === "https:") {
+      trackerSets.httpTrackers.add(normalized);
+    } else trackerSets.otherTrackers.add(normalized);
+  }
+
+  return {
+    wssTrackers: trackerSets.wssTrackers.size,
+    udpTrackers: trackerSets.udpTrackers.size,
+    httpTrackers: trackerSets.httpTrackers.size,
+    otherTrackers: trackerSets.otherTrackers.size,
+    webSeeds: webSeeds.size,
+    exactSources: exactSources.size,
+  };
+}
+
 export function getParsedTorrentFallbacks(isPrivate: boolean): string[] {
   return isPrivate ? [] : [...OFFICIAL_WEBTORRENT_TRACKERS];
 }
@@ -76,6 +167,7 @@ function prepareMagnet(value: string): PreparedBrowserTorrentId {
       value,
       trackers: [...OFFICIAL_WEBTORRENT_TRACKERS],
       publicFallbacksAdded: true,
+      sourceTransports: emptySourceTransports(),
     };
   }
 
@@ -85,6 +177,7 @@ function prepareMagnet(value: string): PreparedBrowserTorrentId {
     fragmentStart < 0 ? undefined : fragmentStart,
   );
   const params = new URLSearchParams(rawQuery);
+  const sourceTransports = getSourceTransportCounts(params);
   const preserved: Array<[string, string]> = [];
   const customTrackers: string[] = [];
 
@@ -123,6 +216,7 @@ function prepareMagnet(value: string): PreparedBrowserTorrentId {
     // fallback policy is therefore explicit here; byte-backed torrents below
     // never receive public fallbacks until their privacy can be known.
     publicFallbacksAdded: true,
+    sourceTransports,
   };
 }
 
@@ -141,8 +235,33 @@ export function prepareBrowserTorrentId(
       // trackers. Runtime diagnostics pick up embedded WSS URLs after parsing.
       trackers: [],
       publicFallbacksAdded: false,
+      sourceTransports: emptySourceTransports(),
     };
   }
 
   return prepareMagnet(value);
+}
+
+/**
+ * Prefer the localhost native transport only when a magnet explicitly declares
+ * tracker routes the browser build cannot open and provides no browser-native
+ * bootstrap of its own. This keeps WebTorrent/WSS sources on the browser engine
+ * while allowing conventional UDP/HTTP-only swarms to use the optional helper.
+ */
+export function shouldPreferNativeTransport(
+  value: string | Uint8Array,
+): boolean {
+  if (typeof value !== "string" || !value.toLowerCase().startsWith("magnet:?")) {
+    return false;
+  }
+
+  const { sourceTransports } = prepareMagnet(value);
+  const nativeTrackerRoutes =
+    sourceTransports.udpTrackers + sourceTransports.httpTrackers;
+  const browserBootstrapRoutes =
+    sourceTransports.wssTrackers +
+    sourceTransports.webSeeds +
+    sourceTransports.exactSources;
+
+  return nativeTrackerRoutes > 0 && browserBootstrapRoutes === 0;
 }

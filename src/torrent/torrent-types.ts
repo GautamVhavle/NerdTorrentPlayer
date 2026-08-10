@@ -46,7 +46,24 @@ export interface TrackerDiagnostic {
   leechers: number | null;
 }
 
+export interface TorrentSourceTransports {
+  /** Secure WebTorrent trackers declared by the source. */
+  wssTrackers: number;
+  /** Native UDP trackers that a browser page cannot contact. */
+  udpTrackers: number;
+  /** HTTP(S) trackers that are not used by the secure browser client. */
+  httpTrackers: number;
+  /** Any other declared tracker transport, including insecure WS. */
+  otherTrackers: number;
+  /** Valid HTTP(S) payload sources declared with `ws` or `as`. */
+  webSeeds: number;
+  /** Valid HTTP(S) exact metadata sources declared with `xs`. */
+  exactSources: number;
+}
+
 export interface TorrentMetrics {
+  /** Runtime currently carrying the swarm session. */
+  transportMode?: "browser" | "native-bridge";
   peers: number;
   downloadSpeed: number;
   uploadSpeed: number;
@@ -66,10 +83,21 @@ export interface TorrentMetrics {
   trackerCount?: number;
   responsiveTrackers?: number;
   trackerAnnounces?: number;
+  reportedTrackerSeeders?: number;
+  reportedTrackerLeechers?: number;
+  /** Sum of tracker scrape populations; peers may overlap across trackers. */
+  reportedSwarmPopulation?: number;
+  /** Peer offers actually delivered by the browser tracker client. */
+  trackerPeerCandidates?: number;
   trackerWarnings?: number;
+  sessionWarnings?: number;
   recoverableWebRtcErrors?: number;
   publicTrackerFallbacks?: boolean;
   reannounceAttempts?: number;
+  reannounceLimit?: number;
+  trackerBindAttempts?: number;
+  trackerBindLimit?: number;
+  sourceTransports?: TorrentSourceTransports;
   peakDownloadSpeed?: number;
   timeToMetadataMs?: number | null;
   timeToFirstPeerMs?: number | null;
@@ -84,6 +112,10 @@ export interface StreamSource {
   url: string;
   mime: string;
   file: TorrentFileView;
+  /** Delivery shape used to configure the media player and explain failures. */
+  playbackKind?: "direct" | "hls" | "remux" | "transcode";
+  /** HLS from the local bridge is a sliding live window, not a seekable file. */
+  streamType?: "on-demand" | "live" | "live:dvr";
 }
 
 export interface RuntimeTorrentFile {
