@@ -10,11 +10,12 @@
     "dev:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "bridge": "node backend/bridge/cli.mjs",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build:vercel": "next build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:live-torrent": "node scripts/torrent-smoke.mjs",
     "test:bridge": "node --test tests/bridge.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .next-vercel",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
     "fscreen": "^1.2.0",
     "lucide-react": "^1.31.0",
     "motion": "^13.1.0",
+    "next": "^16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "webtorrent": "^3.0.21",
