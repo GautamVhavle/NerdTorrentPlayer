@@ -247,7 +247,7 @@ export class LocalTorrentBridgeClient {
       });
       handlers.onPhase("failed", "Native bridge required for this magnet.");
       handlers.onError(
-        "This magnet only advertises conventional UDP/TCP routes. Start the NerdTorrentPlayer bridge on this computer with npm run bridge, keep it running, then submit the magnet again. A browser cannot reach those peers directly.",
+        "This magnet only advertises conventional UDP/TCP routes. Run NerdTorrentPlayer locally with npm run dev and open http://localhost:3000. The hosted page cannot reach these peers when the browser blocks local-network access.",
       );
       // The source was handled intentionally. Do not fall through to browser
       // WebTorrent, which would discard its UDP/TCP routes and wait forever.

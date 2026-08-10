@@ -759,8 +759,8 @@ function HomeStage({
             </p>
           ) : (
             <p className="field-help" id="magnet-help">
-              Parsed locally. With the private bridge running on this computer, the
-              app can reach UDP/TCP peers without uploading your media to an app server.
+              Parsed locally. The companion can reach UDP/TCP peers when your browser
+              permits local-network access; localhost mode is the reliable fallback.
             </p>
           )}
           <label
