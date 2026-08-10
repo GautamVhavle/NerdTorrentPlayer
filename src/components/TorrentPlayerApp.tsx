@@ -759,8 +759,8 @@ function HomeStage({
             </p>
           ) : (
             <p className="field-help" id="magnet-help">
-              Parsed locally. Browser-compatible swarms work here; UDP/TCP-only magnets
-              require localhost mode.
+              Parsed locally. Hosted mode tries secure WebTorrent routes; magnets with
+              only conventional peers may still need localhost mode.
             </p>
           )}
           <label

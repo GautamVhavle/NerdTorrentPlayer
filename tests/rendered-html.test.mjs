@@ -105,9 +105,9 @@ test("keeps WebTorrent browser-only and ships the optimized UI dependencies", as
   assert.match(clientSource, /reportedSwarmPopulation/);
   assert.doesNotMatch(clientSource, /reportedPeerCandidates/);
   assert.doesNotMatch(bridgeClientSource, /https:\/\/nerdtorrentplayer\.vercel\.app/);
-  assert.match(bridgeClientSource, /Native bridge required for this magnet/);
-  assert.match(bridgeClientSource, /Do not fall through to browser/);
-  assert.match(clientSource, /No localhost or WebSocket tracker request was started/);
+  assert.match(bridgeClientSource, /absence must not block the browser fallback/);
+  assert.match(bridgeClientSource, /return false;/);
+  assert.doesNotMatch(clientSource, /No localhost or WebSocket tracker request was started/);
   assert.match(appSource, /peer offers/i);
   assert.doesNotMatch(appSource, /<output>Discovery active<\/output>/);
   assert.doesNotMatch(appSource, /className="trace-status">streaming/);

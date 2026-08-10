@@ -228,29 +228,11 @@ export class LocalTorrentBridgeClient {
 
     const capabilities = await this.probeCapabilities();
     if (!capabilities) {
-      handlers.onMetrics({
-        transportMode: "native-bridge",
-        peers: 0,
-        downloadSpeed: 0,
-        uploadSpeed: 0,
-        progress: 0,
-        downloaded: 0,
-        uploaded: 0,
-        received: 0,
-        peakDownloadSpeed: 0,
-        timeToMetadataMs: null,
-        timeToFirstPeerMs: null,
-        timeToFirstByteMs: null,
-        stalledForMs: 0,
-        sourceTransports: this.sourceTransports,
-      });
-      handlers.onPhase("failed", "Native bridge required for this magnet.");
-      handlers.onError(
-        "This magnet only advertises conventional UDP/TCP routes. Run NerdTorrentPlayer locally with npm run dev and open http://localhost:3000. The hosted page cannot reach these peers when the browser blocks local-network access.",
-      );
-      // The source was handled intentionally. Do not fall through to browser
-      // WebTorrent, which would discard its UDP/TCP routes and wait forever.
-      return true;
+      // A conventional-only source benefits from the native bridge when it is
+      // present, but its absence must not block the browser fallback. The
+      // browser client replaces unsupported routes with its bounded WSS pool,
+      // which can still find WebRTC-capable seeders for this info hash.
+      return false;
     }
 
     const epoch = ++this.loadEpoch;

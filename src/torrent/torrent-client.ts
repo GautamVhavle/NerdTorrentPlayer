@@ -883,8 +883,9 @@ type TorrentRuntimeBackend = Pick<
 
 /**
  * Prefer the optional native companion for conventional-only magnet sources,
- * then fall back to the browser WebTorrent engine. Browser-native sources stay
- * on their established WSS/WebRTC path even when the helper is running.
+ * then use the browser WebTorrent engine if it is unavailable. Browser-native
+ * sources stay on their established WSS/WebRTC path even when the helper is
+ * running.
  */
 class RoutedTorrentClientService {
   private readonly browser = new TorrentClientService();
@@ -915,18 +916,6 @@ class RoutedTorrentClientService {
       this.active = this.bridge;
       return;
     }
-    if (nativeOnly) {
-      this.active = null;
-      handlers.onPhase(
-        "failed",
-        "This conventional torrent requires the local app.",
-      );
-      handlers.onError(
-        "This magnet only advertises UDP/TCP routes, which a hosted browser cannot use. Run npm run dev and open http://localhost:3000. No localhost or WebSocket tracker request was started from this hosted page.",
-      );
-      return;
-    }
-
     this.active = this.browser;
     await this.browser.load(source, handlers);
   }
