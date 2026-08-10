@@ -2080,14 +2080,24 @@ function WatchStage({
           <button className="mini-button active" type="button" onClick={onRetry}>
             Retry
           </button>
-          <button className="mini-button" type="button" onClick={showFiles}>
+          <button
+            className="mini-button"
+            type="button"
+            onClick={() => {
+              setError(null);
+              showFiles();
+            }}
+          >
             Choose another
           </button>
           <button
             className="icon-button"
             type="button"
             aria-label="Dismiss playback error"
-            onClick={() => setError(null)}
+            onClick={() => {
+              setError(null);
+              showFiles();
+            }}
           >
             <X aria-hidden="true" size={16} />
           </button>
@@ -2096,52 +2106,60 @@ function WatchStage({
 
       <div className="watch-layout">
         <div className="watch-main">
-          <Suspense
-            fallback={
-              <div className="player-frame player-module-loading" role="status">
-                <div className="pixel-loader" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
+          {error ? (
+            <div className="player-frame player-module-loading" role="status">
+              <AlertTriangle aria-hidden="true" size={28} />
+              <span className="eyebrow">PLAYBACK STOPPED</span>
+              <strong>Retry the torrent session or choose another file.</strong>
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div className="player-frame player-module-loading" role="status">
+                  <div className="pixel-loader" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <span className="eyebrow">LOADING PLAYER MODULE</span>
+                  <strong>Preparing the local media pipeline…</strong>
                 </div>
-                <span className="eyebrow">LOADING PLAYER MODULE</span>
-                <strong>Preparing the local media pipeline…</strong>
-              </div>
-            }
-          >
-            <RetroPlayer
-              stream={stream}
-              meta={meta}
-              subtitle={activeSubtitle}
-              subtitleOffset={subtitleOffset}
-              preferences={preferences}
-              onPreferences={(next: Partial<PlayerPreferences>) => {
-                setPreferences(next);
-                const merged = {
-                  ...useTorrentStore.getState().preferences,
-                  ...next,
-                };
-                localStorage.setItem(PREFS_KEY, JSON.stringify(merged));
-              }}
-              onSubtitleToggle={() =>
-                setActiveSubtitle(activeSubtitleId ? null : subtitles[0]?.id || null)
               }
-              onSubtitleOffset={(offset) =>
-                setSubtitleOffset(
-                  Math.max(-60, Math.min(60, Math.round(offset * 10) / 10)),
-                )
-              }
-              onPlaybackError={(message) =>
-                setError(
-                  message +
-                    (stream.playbackKind === "direct"
-                      ? " Direct browser mode streams the original file and cannot convert unsupported codecs."
-                      : ""),
-                )
-              }
-            />
-          </Suspense>
+            >
+              <RetroPlayer
+                stream={stream}
+                meta={meta}
+                subtitle={activeSubtitle}
+                subtitleOffset={subtitleOffset}
+                preferences={preferences}
+                onPreferences={(next: Partial<PlayerPreferences>) => {
+                  setPreferences(next);
+                  const merged = {
+                    ...useTorrentStore.getState().preferences,
+                    ...next,
+                  };
+                  localStorage.setItem(PREFS_KEY, JSON.stringify(merged));
+                }}
+                onSubtitleToggle={() =>
+                  setActiveSubtitle(activeSubtitleId ? null : subtitles[0]?.id || null)
+                }
+                onSubtitleOffset={(offset) =>
+                  setSubtitleOffset(
+                    Math.max(-60, Math.min(60, Math.round(offset * 10) / 10)),
+                  )
+                }
+                onPlaybackError={(message) =>
+                  setError(
+                    message +
+                      (stream.playbackKind === "direct"
+                        ? " Direct browser mode streams the original file and cannot convert unsupported codecs."
+                        : ""),
+                  )
+                }
+              />
+            </Suspense>
+          )}
 
           <div className="media-summary">
             <div>
@@ -2335,9 +2353,10 @@ export function TorrentPlayerApp() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      resetSession();
       void torrentClient.destroyCurrent();
     };
-  }, [setHistory, setLibrary, setLibraryError, setLibraryLoading]);
+  }, [resetSession, setHistory, setLibrary, setLibraryError, setLibraryLoading]);
 
   const loadTorrentSubtitles = async (
     infoHash: string,
@@ -2519,8 +2538,12 @@ export function TorrentPlayerApp() {
   };
 
   const retry = () => {
-    useTorrentStore.getState().setError(null);
-    useTorrentStore.getState().setPeerNotice(null);
+    const state = useTorrentStore.getState();
+    // Unmount the failed media provider before creating a fresh signed bridge
+    // session so hls.js cannot keep polling the expired manifest URL.
+    if (state.view === "watch") state.showFiles();
+    state.setError(null);
+    state.setPeerNotice(null);
     void torrentClient.retry();
   };
 

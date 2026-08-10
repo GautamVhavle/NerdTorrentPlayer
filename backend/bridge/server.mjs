@@ -14,7 +14,11 @@ const DEFAULT_PORT = 41780;
 const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
+  "https://nerdtorrentplayer.vercel.app",
 ];
+const TRUSTED_REMOTE_APP_ORIGINS = new Set([
+  "https://nerdtorrentplayer.vercel.app",
+]);
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_METADATA_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_JSON_BYTES = 16 * 1024;
@@ -66,16 +70,19 @@ function normalizeAllowedOrigins(origins) {
   const values = Array.isArray(origins) ? origins : String(origins).split(",");
   const normalized = values.map((value) => value.trim()).filter(Boolean);
   if (normalized.length === 0) {
-    throw new Error("At least one localhost app origin must be configured");
+    throw new Error("At least one trusted NerdTorrentPlayer app origin must be configured");
   }
 
   for (const origin of normalized) {
     const parsed = new URL(origin);
-    if (parsed.protocol !== "http:" || !["localhost", "127.0.0.1"].includes(parsed.hostname)) {
-      throw new Error(`Bridge origin must be a local HTTP origin: ${origin}`);
-    }
     if (parsed.origin !== origin) {
       throw new Error(`Bridge origin must not include a path: ${origin}`);
+    }
+    const localHttp =
+      parsed.protocol === "http:" &&
+      ["localhost", "127.0.0.1"].includes(parsed.hostname);
+    if (!localHttp && !TRUSTED_REMOTE_APP_ORIGINS.has(origin)) {
+      throw new Error(`Bridge origin is not a trusted NerdTorrentPlayer app: ${origin}`);
     }
   }
 
@@ -423,7 +430,7 @@ export function createBridge(options = {}) {
       throw new HttpError(421, "invalid_host", "request Host is not the loopback bridge");
     }
     if (!originAllowed(req)) {
-      throw new HttpError(403, "origin_denied", "request Origin is not an allowed localhost app");
+      throw new HttpError(403, "origin_denied", "request Origin is not an allowed NerdTorrentPlayer app");
     }
   }
 
@@ -1248,7 +1255,7 @@ export function createBridge(options = {}) {
       const [, hlsSessionId, hlsFileIndex, asset] = hlsMatch;
       const session = getSession(hlsSessionId);
       if (req.headers.origin && !originAllowed(req)) {
-        throw new HttpError(403, "origin_denied", "request Origin is not an allowed localhost app");
+        throw new HttpError(403, "origin_denied", "request Origin is not an allowed NerdTorrentPlayer app");
       }
       requireSession(req, session, url.searchParams.get("token"));
       touch(session);
@@ -1268,7 +1275,7 @@ export function createBridge(options = {}) {
         throw new HttpError(405, "method_not_allowed", "stream endpoints accept GET or HEAD");
       }
       if (req.headers.origin && !originAllowed(req)) {
-        throw new HttpError(403, "origin_denied", "request Origin is not an allowed localhost app");
+        throw new HttpError(403, "origin_denied", "request Origin is not an allowed NerdTorrentPlayer app");
       }
       requireSession(req, session, url.searchParams.get("token"));
       touch(session);

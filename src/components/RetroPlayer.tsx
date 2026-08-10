@@ -603,9 +603,12 @@ export function RetroPlayer({
       // to build the initial live window without declaring a fatal error.
       provider.config = {
         manifestLoadingTimeOut: 120_000,
-        manifestLoadingMaxRetry: 12,
+        // A missing localhost bridge session will not recover by hammering the
+        // same signed manifest URL. Keep a few retries for a cold HLS producer,
+        // then let the app surface one actionable playback error.
+        manifestLoadingMaxRetry: 3,
         manifestLoadingRetryDelay: 1_000,
-        manifestLoadingMaxRetryTimeout: 15_000,
+        manifestLoadingMaxRetryTimeout: 5_000,
       };
     },
     [],
@@ -709,7 +712,10 @@ export function RetroPlayer({
         src={{ src: stream.url, type: stream.mime } as MediaSrc}
         viewType={stream.file.category === "audio" ? "audio" : "video"}
         streamType={stream.streamType ?? "on-demand"}
-        autoPlay
+        // Native HLS can take long enough to prepare that the original click's
+        // browser activation expires. Requiring one explicit play press avoids
+        // noisy, policy-rejected autoplay requests while the manifest warms up.
+        autoPlay={stream.playbackKind !== "hls"}
         preload="metadata"
         playsInline
         keyDisabled

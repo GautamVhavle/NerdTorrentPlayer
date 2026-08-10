@@ -11,6 +11,11 @@ import type {
 } from "./torrent-types";
 
 const DEFAULT_BRIDGE_ORIGIN = "http://127.0.0.1:41780";
+const TRUSTED_APP_ORIGINS = new Set([
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://nerdtorrentplayer.vercel.app",
+]);
 // First loopback access can include a browser CORS/PNA preflight and should not
 // silently fall back to WebRTC merely because that handshake is cold.
 const CAPABILITY_TIMEOUT_MS = 5_000;
@@ -110,9 +115,9 @@ interface ActiveBridgeFile {
   view: TorrentFileView;
 }
 
-function canProbeLocalBridge(): boolean {
+export function canProbeLocalBridge(): boolean {
   if (typeof window === "undefined") return false;
-  return window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  return TRUSTED_APP_ORIGINS.has(window.location.origin);
 }
 
 async function readBridgeError(response: Response, fallback: string): Promise<Error> {
@@ -179,9 +184,9 @@ function needsContainerConversion(file: TorrentFileView): boolean {
 /**
  * Optional localhost companion for conventional BitTorrent swarms.
  *
- * It is deliberately unavailable to the hosted application: only a page
- * served from localhost may probe the loopback helper, and the helper applies
- * its own Origin, Host, and capability-token checks.
+ * Only the local development app and the exact production origin may probe
+ * the loopback helper. The helper independently applies Origin, Host, and
+ * capability-token checks before it accepts a torrent.
  */
 export class LocalTorrentBridgeClient {
   private handlers: TorrentServiceHandlers | null = null;
@@ -217,13 +222,39 @@ export class LocalTorrentBridgeClient {
       return false;
     }
 
-    const capabilities = await this.probeCapabilities();
-    if (!capabilities) return false;
-
     await this.destroyCurrent();
-    const epoch = ++this.loadEpoch;
     this.handlers = handlers;
     this.source = source;
+    this.sourceTransports = prepareBrowserTorrentId(source.value).sourceTransports;
+
+    const capabilities = await this.probeCapabilities();
+    if (!capabilities) {
+      handlers.onMetrics({
+        transportMode: "native-bridge",
+        peers: 0,
+        downloadSpeed: 0,
+        uploadSpeed: 0,
+        progress: 0,
+        downloaded: 0,
+        uploaded: 0,
+        received: 0,
+        peakDownloadSpeed: 0,
+        timeToMetadataMs: null,
+        timeToFirstPeerMs: null,
+        timeToFirstByteMs: null,
+        stalledForMs: 0,
+        sourceTransports: this.sourceTransports,
+      });
+      handlers.onPhase("failed", "Native bridge required for this magnet.");
+      handlers.onError(
+        "This magnet only advertises conventional UDP/TCP routes. Start the NerdTorrentPlayer bridge on this computer with npm run bridge, keep it running, then select Retry. A browser cannot reach those peers directly.",
+      );
+      // The source was handled intentionally. Do not fall through to browser
+      // WebTorrent, which would discard its UDP/TCP routes and wait forever.
+      return true;
+    }
+
+    const epoch = ++this.loadEpoch;
     this.startedAt = Date.now();
     this.firstPeerAt = null;
     this.firstByteAt = null;
@@ -234,7 +265,6 @@ export class LocalTorrentBridgeClient {
     this.peakDownloadSpeed = 0;
     this.readyEmitted = false;
     this.noPeerNoticeEmitted = false;
-    this.sourceTransports = prepareBrowserTorrentId(source.value).sourceTransports;
     this.abortController = new AbortController();
 
     // Surface the chosen runtime before the first status poll so the loading

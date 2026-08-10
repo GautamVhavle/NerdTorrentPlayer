@@ -16,6 +16,7 @@ import {
 } from "../backend/bridge/server.mjs";
 
 const ORIGIN = "http://localhost:3000";
+const PRODUCTION_ORIGIN = "https://nerdtorrentplayer.vercel.app";
 const MAGNET = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=fixture";
 
 class FakeFile {
@@ -165,6 +166,27 @@ test("bridge rejects untrusted origins before adding a torrent", async (t) => {
   });
   assert.equal(response.status, 403);
   assert.equal(client.addCalls, 0);
+});
+
+test("bridge permits only the exact production app origin", async (t) => {
+  const client = new FakeClient();
+  const bridge = createBridge({
+    client,
+    ffmpeg: { available: false, path: "ffmpeg", version: null },
+  });
+  t.after(() => bridge.close());
+  const address = await bridge.listen(0);
+
+  const allowed = await fetch(`${address.url}/v1/capabilities`, {
+    headers: { Origin: PRODUCTION_ORIGIN },
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), PRODUCTION_ORIGIN);
+
+  const lookalike = await fetch(`${address.url}/v1/capabilities`, {
+    headers: { Origin: "https://nerdtorrentplayer.vercel.app.attacker.example" },
+  });
+  assert.equal(lookalike.status, 403);
 });
 
 test("bridge rejects a non-loopback Host to prevent DNS rebinding", async (t) => {

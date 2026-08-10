@@ -75,9 +75,13 @@ test("ships the WebTorrent streaming bridge and branded social card", async () =
 });
 
 test("keeps WebTorrent browser-only and ships the optimized UI dependencies", async () => {
-  const [clientSource, appSource, packageJson, page] = await Promise.all([
+  const [clientSource, bridgeClientSource, appSource, packageJson, page] = await Promise.all([
     readFile(
       new URL("../src/torrent/torrent-client.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../src/torrent/local-bridge-client.ts", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -100,6 +104,9 @@ test("keeps WebTorrent browser-only and ships the optimized UI dependencies", as
   assert.match(clientSource, /tracker\.on\("peer", onPeer\)/);
   assert.match(clientSource, /reportedSwarmPopulation/);
   assert.doesNotMatch(clientSource, /reportedPeerCandidates/);
+  assert.match(bridgeClientSource, /https:\/\/nerdtorrentplayer\.vercel\.app/);
+  assert.match(bridgeClientSource, /Native bridge required for this magnet/);
+  assert.match(bridgeClientSource, /Do not fall through to browser/);
   assert.match(appSource, /peer offers/i);
   assert.doesNotMatch(appSource, /<output>Discovery active<\/output>/);
   assert.doesNotMatch(appSource, /className="trace-status">streaming/);

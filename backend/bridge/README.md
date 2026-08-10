@@ -3,7 +3,8 @@
 The bridge gives the localhost web app access to conventional BitTorrent peers
 (TCP, UDP trackers, HTTP trackers, DHT, and peer exchange) without turning the
 host into a public relay. It listens only on `127.0.0.1` and accepts API calls
-only from configured localhost origins.
+only from the local development app or the exact NerdTorrentPlayer production
+origin.
 
 Start it alongside the web app:
 
@@ -14,13 +15,14 @@ npm run bridge
 Defaults:
 
 - URL: `http://127.0.0.1:41780`
-- allowed origins: `http://localhost:3000,http://127.0.0.1:3000`
+- allowed origins: `http://localhost:3000,http://127.0.0.1:3000,https://nerdtorrentplayer.vercel.app`
 - idle session lifetime: 30 minutes
 - maximum sessions/streams/transcodes: 3/4/1
 
 `BRIDGE_PORT`, `BRIDGE_ALLOWED_ORIGINS`, and `BRIDGE_FFMPEG_PATH` may be set to
-override the port, comma-separated localhost origins, and ffmpeg executable.
-The bind address is intentionally not configurable.
+override the port, comma-separated trusted app origins, and ffmpeg executable.
+Only loopback HTTP origins and the exact production origin are accepted. The
+bind address is intentionally not configurable.
 
 ## API
 

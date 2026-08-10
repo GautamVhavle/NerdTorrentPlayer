@@ -4,7 +4,7 @@ const bridge = createBridge();
 const address = await bridge.listen();
 
 console.log(`WebTorrent native bridge listening at ${address.url}`);
-console.log("The bridge accepts only configured localhost app origins and magnet URIs.");
+console.log("The bridge accepts only trusted NerdTorrentPlayer app origins and magnet URIs.");
 console.log("Open GET /v1/capabilities from the local app to begin a session.");
 
 let stopping = false;
@@ -21,4 +21,3 @@ process.once("SIGINT", () => {
 process.once("SIGTERM", () => {
   void stop("SIGTERM");
 });
-
