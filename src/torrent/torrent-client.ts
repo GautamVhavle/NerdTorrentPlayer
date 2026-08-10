@@ -828,22 +828,8 @@ export function isPlayable(file: TorrentFileView): boolean {
 }
 
 function normalizePlaybackMime(file: TorrentFileView): string {
-  if (file.category === "video") {
-    if (file.extension === "webm") return "video/webm";
-    if (file.extension === "ogv") return "video/ogg";
-    if (file.extension === "avi") return "video/avi";
-    return "video/mp4";
-  }
-  if (file.category === "audio") {
-    if (file.extension === "m4a" || file.extension === "aac") {
-      return "audio/mp4";
-    }
-    if (file.extension === "ogg" || file.extension === "oga") {
-      return "audio/ogg";
-    }
-    if (file.extension === "wav") return "audio/wav";
-    if (file.extension === "flac") return "audio/flac";
-    return "audio/mpeg";
-  }
+  // Keep the real container type so the media element can make an accurate
+  // support decision. Coercing MKV, MOV, AVI, AAC, or Opus to MP4/MP3 can leave
+  // the player black while hiding the useful unsupported-format error.
   return file.mime;
 }

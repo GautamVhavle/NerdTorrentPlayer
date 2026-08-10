@@ -153,7 +153,7 @@ function PlayerControls({
 
   return (
     <Controls.Root className="player-controls">
-      <div className="timeline-row">
+      <Controls.Group className="timeline-row">
         <TimeSlider.Root className="time-slider" aria-label="Seek through media">
           <TimeSlider.Track className="slider-track">
             <TimeSlider.Progress className="slider-progress" />
@@ -164,9 +164,9 @@ function PlayerControls({
             <TimeSlider.Value />
           </TimeSlider.Preview>
         </TimeSlider.Root>
-      </div>
+      </Controls.Group>
 
-      <div className="transport-row">
+      <Controls.Group className="transport-row">
         <div className="transport-cluster">
           <PlayButton
             className="player-button primary-player-button"
@@ -282,7 +282,7 @@ function PlayerControls({
             </FullscreenButton>
           ) : null}
         </div>
-      </div>
+      </Controls.Group>
     </Controls.Root>
   );
 }

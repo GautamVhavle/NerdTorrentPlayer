@@ -1627,7 +1627,7 @@ button:disabled {
   font-family: var(--font-body);
 }
 
-.retro-media-player media-provider,
+.retro-media-player [data-media-provider],
 .retro-media-player video,
 .retro-media-player audio {
   display: block;
@@ -1885,6 +1885,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   flex-direction: column;
+  pointer-events: none;
   background: rgb(2 5 7 / 0.72);
   text-align: center;
 }
@@ -2665,6 +2666,7 @@ kbd {
   z-index: 160;
   inset: 0;
   place-items: center;
+  pointer-events: none;
   background: rgb(5 7 10 / 0.88);
   backdrop-filter: blur(8px);
 }
