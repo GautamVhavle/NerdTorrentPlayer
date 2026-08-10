@@ -709,6 +709,7 @@ export function RetroPlayer({
         src={{ src: stream.url, type: stream.mime } as MediaSrc}
         viewType={stream.file.category === "audio" ? "audio" : "video"}
         streamType={stream.streamType ?? "on-demand"}
+        autoPlay
         preload="metadata"
         playsInline
         keyDisabled

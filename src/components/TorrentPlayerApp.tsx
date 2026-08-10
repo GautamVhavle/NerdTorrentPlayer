@@ -22,7 +22,6 @@ import {
   FileArchive,
   FileText,
   Film,
-  Gamepad2,
   HardDriveDownload,
   Image as ImageIcon,
   Keyboard,
@@ -2728,7 +2727,8 @@ export function TorrentPlayerApp() {
       <footer className="site-footer">
         <div className="footer-brand">
           <span className="footer-mark" aria-hidden="true">
-            <Gamepad2 size={15} />
+            <Waypoints size={15} />
+            <i />
           </span>
           <span>
             <strong>NerdTorrentPlayer</strong>

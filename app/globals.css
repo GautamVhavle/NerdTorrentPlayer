@@ -3029,6 +3029,7 @@ kbd {
 .header-nav .nav-icon-button {
   width: 38px;
   padding: 0;
+  justify-content: center;
 }
 
 .header-nav .nav-icon-button kbd {
@@ -4099,13 +4100,32 @@ kbd {
   gap: 9px;
 }
 
-.footer-mark {
+.site-footer .footer-mark {
   display: grid;
+  position: relative;
+  flex: 0 0 32px;
   width: 32px;
   height: 32px;
   place-items: center;
   border: 1px solid var(--border);
-  color: var(--green);
+  background:
+    linear-gradient(135deg, rgb(198 255 74 / 0.16), transparent),
+    #0b130d;
+  color: var(--lime);
+  box-shadow:
+    3px 3px 0 rgb(198 255 74 / 0.14),
+    inset 0 0 16px rgb(198 255 74 / 0.06);
+}
+
+.footer-mark i {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
 }
 
 .footer-brand strong,
