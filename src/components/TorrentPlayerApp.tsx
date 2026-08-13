@@ -1399,9 +1399,18 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
           <Search aria-hidden="true" size={28} />
           <h2>No playable media detected</h2>
           <p>
-            The torrent loaded, but it does not contain a supported video or
-            audio extension. You can still inspect every file below.
+            This torrent contains only {files.length === 1 ? "one non-media file" : `${files.length} non-media files`}.
+            It has no video or audio payload to play. Choose a torrent that
+            includes a media file, then try again.
           </p>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={onChangeSource}
+          >
+            <RotateCcw aria-hidden="true" size={15} />
+            Choose another torrent
+          </button>
         </div>
       )}
 
@@ -2031,6 +2040,12 @@ function WatchStage({
   if (!stream || !meta) return null;
   const activeSubtitle =
     subtitles.find((track) => track.id === activeSubtitleId) || null;
+  const playableFiles = files.filter(isPlayable);
+  const activeFileIndex = playableFiles.findIndex(
+    (file) => file.path === stream.file.path,
+  );
+  const nextFile =
+    activeFileIndex >= 0 ? playableFiles[activeFileIndex + 1] : undefined;
   const tabs: Array<{
     id: InspectorPanel;
     label: string;
@@ -2157,10 +2172,11 @@ function WatchStage({
                         : ""),
                   )
                 }
+                nextFileName={nextFile?.name}
+                onNextFile={nextFile ? () => onSwitchFile(nextFile.path) : undefined}
               />
             </Suspense>
           )}
-
           <div className="media-summary">
             <div>
               <span className="eyebrow">CURRENT FILE</span>
@@ -2168,7 +2184,9 @@ function WatchStage({
               <p>
                 {formatBytes(stream.file.length)} ·{" "}
                 {stream.file.extension.toUpperCase()} ·{" "}
-                {stream.file.compatibility === "likely"
+                {stream.playbackKind === "hls"
+                  ? "Local H.264/AAC HLS conversion"
+                  : stream.file.compatibility === "likely"
                   ? "Browser-compatible container"
                   : "Experimental browser playback"}
               </p>
@@ -2271,7 +2289,11 @@ function HeaderConnectionStatus() {
   );
 }
 
-export function TorrentPlayerApp() {
+export function TorrentPlayerApp({
+  initialLibraryOpen = false,
+}: {
+  initialLibraryOpen?: boolean;
+}) {
   const reduceMotion = useReducedMotion();
   const view = useTorrentStore((state) => state.view);
   const phase = useTorrentStore((state) => state.phase);
@@ -2297,6 +2319,10 @@ export function TorrentPlayerApp() {
   const [changeConfirmOpen, setChangeConfirmOpen] = useState(false);
   const [globalDrag, setGlobalDrag] = useState(false);
   const dragDepth = useRef(0);
+
+  useEffect(() => {
+    if (initialLibraryOpen) setLibraryOpen(true);
+  }, [initialLibraryOpen, setLibraryOpen]);
 
   useEffect(() => {
     void listResumeRecords().then(setHistory);

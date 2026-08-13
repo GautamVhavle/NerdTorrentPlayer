@@ -1903,6 +1903,14 @@ button:disabled {
   font-size: 9px;
 }
 
+.player-ready-overlay {
+  pointer-events: auto;
+}
+
+.player-ready-action {
+  margin-top: 14px;
+}
+
 .pixel-loader {
   display: flex;
   gap: 5px;
@@ -4283,6 +4291,10 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  body {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
   .site-header,
   .home-stage,
   .files-stage,
@@ -4343,6 +4355,7 @@ kbd {
   .files-stage,
   .watch-stage {
     padding-top: 28px;
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
   }
 
   .hero-copy {
@@ -4437,6 +4450,11 @@ kbd {
     min-height: 72px;
   }
 
+  .file-row input {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .compat-badge {
     grid-column: 2;
     justify-self: start;
@@ -4458,6 +4476,7 @@ kbd {
 
   .watch-title-row {
     grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
   }
 
   .watch-title-row > .secondary-button {
@@ -4487,6 +4506,7 @@ kbd {
 
   .playback-error .mini-button {
     grid-row: 2;
+    min-height: 40px;
   }
 
   .player-status-strip {
@@ -4539,6 +4559,15 @@ kbd {
 
   .explain-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mobile-sheet {
+    max-height: min(82dvh, 720px);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sheet-content {
+    overscroll-behavior: contain;
   }
 }
 
@@ -4757,9 +4786,15 @@ kbd {
     display: none;
   }
 
+  .next-player-button {
+    display: inline-flex;
+    border-color: rgb(198 255 74 / 0.35);
+    color: var(--lime);
+  }
+
   .player-button {
-    min-width: 34px;
-    height: 34px;
+    min-width: 40px;
+    height: 40px;
     padding: 0 7px;
   }
 
@@ -4777,7 +4812,7 @@ kbd {
   }
 
   .player-status-overlay {
-    bottom: 70px;
+    bottom: 78px;
   }
 
   .resume-prompt {
@@ -4797,6 +4832,7 @@ kbd {
   }
 
   .mobile-inspector-tabs button {
+    min-height: 52px;
     grid-template-columns: 1fr;
     justify-items: center;
     gap: 5px;

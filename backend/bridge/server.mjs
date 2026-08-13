@@ -26,7 +26,7 @@ const HLS_SEGMENT_PATTERN = /^segment-\d{6}\.ts$/;
 // range. Keep the conversion alive long enough for a cold/slow peer set to
 // assemble its first short HLS segment.
 const HLS_READY_TIMEOUT_MS = 120_000;
-const DEFAULT_HLS_MAX_BYTES = 128 * 1024 * 1024;
+const DEFAULT_HLS_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 
 class HttpError extends Error {
   constructor(status, code, message) {
@@ -199,7 +199,6 @@ export function buildHlsFfmpegArgs(directory) {
     "error",
     "-fflags",
     "+genpts",
-    "-re",
     "-i",
     "pipe:0",
     "-map",
@@ -209,23 +208,37 @@ export function buildHlsFfmpegArgs(directory) {
     "-sn",
     "-dn",
     "-c:v",
-    "copy",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-tune",
+    "zerolatency",
+    "-pix_fmt",
+    "yuv420p",
+    "-crf",
+    "23",
+    "-maxrate",
+    "4M",
+    "-bufsize",
+    "8M",
+    "-force_key_frames",
+    "expr:gte(t,n_forced*2)",
     "-c:a",
-    "copy",
+    "aac",
+    "-b:a",
+    "160k",
+    "-ac",
+    "2",
     "-f",
     "hls",
     "-hls_segment_type",
     "mpegts",
     "-hls_time",
-    "1",
+    "2",
     "-hls_list_size",
-    "24",
-    "-hls_delete_threshold",
-    "4",
-    "-hls_allow_cache",
     "0",
     "-hls_flags",
-    "delete_segments+split_by_time+temp_file",
+    "independent_segments+temp_file",
     "-hls_segment_filename",
     join(directory, "segment-%06d.ts"),
     join(directory, HLS_PLAYLIST_NAME),
@@ -735,7 +748,13 @@ export function createBridge(options = {}) {
     return session.destroying;
   }
 
-  function startSession(magnet) {
+  async function startSession(magnet) {
+    if (sessions.size > 0) {
+      await Promise.all(
+        [...sessions.values()]
+          .map((session) => destroySession(session)),
+      );
+    }
     if (sessions.size >= maxSessions) {
       throw new HttpError(429, "session_limit", "close an existing session before adding another torrent");
     }
@@ -820,7 +839,7 @@ export function createBridge(options = {}) {
         url: ffmpeg.available
           ? `${base}/v1/sessions/${session.id}/files/${index}/hls/${HLS_PLAYLIST_NAME}?token=${tokenParam}`
           : null,
-        note: "Live sliding MPEG-TS HLS playlist with H.264/AAC copied from the source",
+        note: "Growing MPEG-TS HLS archive transcoded to browser-ready H.264/AAC",
       },
       remux: {
         available: ffmpeg.available,
@@ -1207,8 +1226,10 @@ export function createBridge(options = {}) {
             available: ffmpeg.available,
             type: "application/vnd.apple.mpegurl",
             segmentType: "video/mp2t",
-            segmentDurationSeconds: 1,
-            slidingWindowSegments: 24,
+            videoCodec: "h264",
+            audioCodec: "aac",
+            segmentDurationSeconds: 2,
+            playlistMode: "growing-archive",
             boundedDiskBytes: hlsMaxBytes,
             ffmpegVersion: ffmpeg.version,
           },
@@ -1238,7 +1259,7 @@ export function createBridge(options = {}) {
       requireBootstrap(req);
       const body = await readJson(req);
       const magnet = validateMagnet(body?.magnet);
-      const session = startSession(magnet);
+      const session = await startSession(magnet);
       json(res, 202, sessionEnvelope(req, session, true), corsHeaders(req));
       return;
     }

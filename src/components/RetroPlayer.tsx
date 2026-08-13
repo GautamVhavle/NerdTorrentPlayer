@@ -33,6 +33,7 @@ import {
   Gauge,
   Maximize,
   Minimize,
+  SkipForward,
   Pause,
   PictureInPicture2,
   Play,
@@ -79,11 +80,19 @@ interface RetroPlayerProps {
   onSubtitleToggle(): void;
   onSubtitleOffset(offset: number): void;
   onPlaybackError(message: string): void;
+  nextFileName?: string;
+  onNextFile?(): void;
 }
 
 type BufferingReason = "initial" | "waiting" | "stalled" | null;
 
 const PLAYBACK_SAVE_INTERVAL_MS = 5_000;
+const PLAYBACK_DEBUG = process.env.NODE_ENV !== "production";
+
+function logPlaybackDiagnostic(event: string, details: Record<string, unknown>) {
+  if (!PLAYBACK_DEBUG) return;
+  console.info("[Torrent playback]", event, details);
+}
 
 function bufferedSecondsAhead(buffered: TimeRanges, currentTime: number) {
   try {
@@ -139,10 +148,16 @@ function playbackErrorMessage(
 
 function PlayerControls({
   hasCaptions,
+  stream,
   onPreferences,
+  nextFileName,
+  onNextFile,
 }: {
   hasCaptions: boolean;
+  stream: StreamSource;
   onPreferences(preferences: Partial<PlayerPreferences>): void;
+  nextFileName?: string;
+  onNextFile?(): void;
 }) {
   const remote = useMediaRemote();
   const paused = useMediaState("paused");
@@ -157,6 +172,7 @@ function PlayerControls({
   const downloadSpeed = useTorrentStore(
     (state) => state.metrics.downloadSpeed,
   );
+  const hlsPlayback = stream.playbackKind === "hls";
 
   const cycleSpeed = () => {
     const rates = [0.75, 1, 1.25, 1.5, 2];
@@ -169,7 +185,10 @@ function PlayerControls({
   return (
     <Controls.Root className="player-controls">
       <Controls.Group className="timeline-row">
-        <TimeSlider.Root className="time-slider" aria-label="Seek through media">
+        <TimeSlider.Root
+          className="time-slider"
+          aria-label={hlsPlayback ? "Seek within the available HLS window" : "Seek through media"}
+        >
           <TimeSlider.Track className="slider-track">
             <TimeSlider.Progress className="slider-progress" />
             <TimeSlider.TrackFill className="slider-fill" />
@@ -197,8 +216,16 @@ function PlayerControls({
 
           <div className="time-readout" aria-label="Playback time">
             <Time type="current" />
-            <span aria-hidden="true">/</span>
-            <Time type="duration" />
+            {hlsPlayback ? (
+              <span title="This timeline grows as the local bridge converts the torrent">
+                GROWING TIMELINE
+              </span>
+            ) : (
+              <>
+                <span aria-hidden="true">/</span>
+                <Time type="duration" />
+              </>
+            )}
           </div>
 
           <MuteButton
@@ -228,6 +255,18 @@ function PlayerControls({
             <i aria-hidden="true" />
             {formatSpeed(downloadSpeed)}
           </span>
+
+          {nextFileName && onNextFile ? (
+            <button
+              className="player-button next-player-button"
+              type="button"
+              aria-label={"Play next file: " + nextFileName}
+              title={"Next episode: " + nextFileName}
+              onClick={onNextFile}
+            >
+              <SkipForward aria-hidden="true" size={19} />
+            </button>
+          ) : null}
 
           <CaptionButton
             className="player-button"
@@ -309,6 +348,7 @@ function PlayerStatus({
   reason: BufferingReason;
   stream: StreamSource;
 }) {
+  const remote = useMediaRemote();
   const canPlay = useMediaState("canPlay");
   const paused = useMediaState("paused");
   const seeking = useMediaState("seeking");
@@ -320,6 +360,25 @@ function PlayerStatus({
     (state) => state.metrics.transportMode === "native-bridge",
   );
   const hlsPlayback = stream.playbackKind === "hls";
+
+  const readyToStart = hlsPlayback && canPlay && paused && !reason && !seeking;
+
+  if (readyToStart) {
+    return (
+      <div className="player-status-overlay player-ready-overlay" role="status">
+        <span className="eyebrow">STREAM READY</span>
+        <strong>Ready to play</strong>
+        <button
+          className="arcade-button primary-action player-ready-action"
+          type="button"
+          onClick={() => remote.play()}
+        >
+          <Play aria-hidden="true" size={18} fill="currentColor" />
+          Start playback
+        </button>
+      </div>
+    );
+  }
 
   if ((canPlay && !reason && !seeking) || (canPlay && paused && !seeking)) {
     return null;
@@ -419,6 +478,8 @@ export function RetroPlayer({
   onSubtitleToggle,
   onSubtitleOffset,
   onPlaybackError,
+  nextFileName,
+  onNextFile,
 }: RetroPlayerProps) {
   const playerRef = useRef<MediaPlayerInstance>(null);
   const bufferStatusRef = useRef<HTMLSpanElement>(null);
@@ -481,7 +542,12 @@ export function RetroPlayer({
     setBufferingReason("initial");
     setResumeRecord(null);
     setResumeDismissed(false);
-  }, []);
+    logPlaybackDiagnostic("load-start", {
+      playbackKind: stream.playbackKind,
+      streamType: stream.streamType ?? "on-demand",
+      url: stream.url,
+    });
+  }, [stream.playbackKind, stream.streamType, stream.url]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -589,9 +655,15 @@ export function RetroPlayer({
   const handlePlaybackError = useCallback(
     (detail: MediaErrorDetail) => {
       setBufferingReason(null);
+      logPlaybackDiagnostic("media-error", {
+        code: detail.code,
+        message: detail.message,
+        playbackKind: stream.playbackKind,
+        url: stream.url,
+      });
       onPlaybackError(playbackErrorMessage(detail, stream.playbackKind));
     },
-    [onPlaybackError, stream.playbackKind],
+    [onPlaybackError, stream.playbackKind, stream.url],
   );
 
   const handleProviderChange = useCallback(
@@ -602,6 +674,7 @@ export function RetroPlayer({
       // origin that already has a manifest, so give this local producer time
       // to build the initial live window without declaring a fatal error.
       provider.config = {
+        debug: false,
         manifestLoadingTimeOut: 120_000,
         // A missing localhost bridge session will not recover by hammering the
         // same signed manifest URL. Keep a few retries for a cold HLS producer,
@@ -609,6 +682,15 @@ export function RetroPlayer({
         manifestLoadingMaxRetry: 3,
         manifestLoadingRetryDelay: 1_000,
         manifestLoadingMaxRetryTimeout: 5_000,
+        // ffmpeg can publish a playlist fractionally before the corresponding
+        // local segment becomes visible. Retry those short-lived requests
+        // instead of treating them as a terminal media failure.
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 500,
+        fragLoadingMaxRetryTimeout: 5_000,
+        levelLoadingMaxRetry: 6,
+        levelLoadingRetryDelay: 500,
+        levelLoadingMaxRetryTimeout: 5_000,
       };
     },
     [],
@@ -784,7 +866,10 @@ export function RetroPlayer({
 
         <PlayerControls
           hasCaptions={Boolean(subtitleContent)}
+          stream={stream}
           onPreferences={onPreferences}
+          nextFileName={nextFileName}
+          onNextFile={onNextFile}
         />
       </MediaPlayer>
 

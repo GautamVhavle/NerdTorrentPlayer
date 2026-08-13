@@ -106,6 +106,8 @@ async function createSession(url) {
   const capabilityResponse = await fetch(`${url}/v1/capabilities`, { headers: headers() });
   assert.equal(capabilityResponse.status, 200);
   const capabilities = await capabilityResponse.json();
+  assert.equal(capabilities.playback.hls.playlistMode, "growing-archive");
+  assert.equal(capabilities.playback.hls.segmentDurationSeconds, 2);
   const response = await fetch(`${url}/v1/sessions`, {
     method: "POST",
     headers: headers({
@@ -147,10 +149,17 @@ test("ffmpeg arguments support lightweight remux and codec fallback", () => {
   assert.deepEqual(remux.slice(-3), ["-f", "mp4", "pipe:1"]);
 
   const hls = buildHlsFfmpegArgs("/private/hls");
-  assert.ok(hls.includes("-re"));
-  assert.ok(hls.includes("delete_segments+split_by_time+temp_file"));
+  assert.ok(!hls.includes("-re"));
+  assert.ok(hls.includes("libx264"));
+  assert.ok(hls.includes("yuv420p"));
+  assert.deepEqual(hls.slice(hls.indexOf("-crf"), hls.indexOf("-crf") + 6), [
+    "-crf", "23", "-maxrate", "4M", "-bufsize", "8M",
+  ]);
+  assert.ok(hls.includes("aac"));
+  assert.ok(hls.includes("expr:gte(t,n_forced*2)"));
+  assert.ok(hls.includes("independent_segments+temp_file"));
   assert.deepEqual(hls.slice(hls.indexOf("-hls_time"), hls.indexOf("-hls_time") + 4), [
-    "-hls_time", "1", "-hls_list_size", "24",
+    "-hls_time", "2", "-hls_list_size", "0",
   ]);
   assert.ok(hls.includes("/private/hls/segment-%06d.ts"));
   assert.equal(hls.at(-1), "/private/hls/index.m3u8");
@@ -222,6 +231,19 @@ test("session API is token protected and raw stream supports ranges", async (t) 
   });
   assert.equal(deleted.status, 204);
   assert.equal(client.removeCalls, 1);
+});
+
+test("creating a new session replaces the prior local session", async (t) => {
+  const { bridge, client, url } = await fixture({ maxSessions: 1 });
+  t.after(() => bridge.close());
+
+  const first = await createSession(url);
+  const second = await createSession(url);
+
+  assert.notEqual(second.id, first.id);
+  assert.equal(client.addCalls, 2);
+  assert.equal(client.removeCalls, 1);
+  assert.equal(bridge.sessions.size, 1);
 });
 
 test("missing ffmpeg is reported without starting a raw download", async (t) => {

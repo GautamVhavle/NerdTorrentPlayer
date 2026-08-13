@@ -221,7 +221,6 @@ export class LocalTorrentBridgeClient {
       return false;
     }
 
-    await this.destroyCurrent();
     this.handlers = handlers;
     this.source = source;
     this.sourceTransports = prepareBrowserTorrentId(source.value).sourceTransports;
@@ -234,6 +233,8 @@ export class LocalTorrentBridgeClient {
       // which can still find WebRTC-capable seeders for this info hash.
       return false;
     }
+
+    await this.destroyCurrent();
 
     const epoch = ++this.loadEpoch;
     this.startedAt = Date.now();
@@ -310,7 +311,6 @@ export class LocalTorrentBridgeClient {
       handlers.onError("The bridge session did not include its private capability token.");
       return true;
     }
-
     handlers.onPhase(
       "metadata",
       "Native transport joined the UDP/TCP swarm; resolving metadata...",
@@ -515,7 +515,7 @@ export class LocalTorrentBridgeClient {
       url: descriptor.url,
       mime: descriptor.type,
       playbackKind,
-      streamType: playbackKind === "hls" ? "live:dvr" : "on-demand",
+      streamType: "on-demand",
       file: converted
         ? { ...view, mime: descriptor.type, compatibility: "likely" }
         : view,
