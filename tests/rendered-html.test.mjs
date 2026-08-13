@@ -34,7 +34,7 @@ test("server-renders the finished torrent player landing screen", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>NerdTorrentPlayer — Stream the Swarm<\/title>/i);
+  assert.match(html, /<title>NerdTorrentPlayer - Stream the Swarm<\/title>/i);
   assert.match(html, /STREAM/);
   assert.match(html, /THE SWARM/);
   assert.match(html, /Magnet URI/);

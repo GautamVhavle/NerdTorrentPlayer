@@ -143,7 +143,7 @@ function formatRelativeSession(timestamp: number) {
 }
 
 function formatLatency(milliseconds?: number | null) {
-  if (milliseconds === null || milliseconds === undefined) return "—";
+  if (milliseconds === null || milliseconds === undefined) return "N/A";
   if (milliseconds < 1_000) return `${Math.round(milliseconds)}ms`;
   return `${(milliseconds / 1_000).toFixed(1)}s`;
 }
@@ -154,7 +154,7 @@ function formatDurationMs(milliseconds?: number | null) {
     milliseconds === undefined ||
     !Number.isFinite(milliseconds)
   ) {
-    return "—";
+    return "N/A";
   }
   const totalSeconds = Math.max(0, Math.round(milliseconds / 1_000));
   const hours = Math.floor(totalSeconds / 3_600);
@@ -1322,7 +1322,7 @@ function FilesStage({ onPlay, onChangeSource, onRetry }: FilesStageProps) {
           </span>
           <h1 id="files-title">{meta.name}</h1>
           <p>
-            Metadata decoded. Ranked by likely playability and media size—choose
+            Metadata decoded. Ranked by likely playability and media size - choose
             the payload you want the piece scheduler to prioritize.
           </p>
         </div>
@@ -1656,7 +1656,7 @@ function StreamInspector({ onRetry }: { onRetry(): void }) {
       <div className="diagnostic-strip" aria-label="Low-level transfer counters">
         <span>
           <small>Piece size</small>
-          <strong>{metrics.pieceLength ? formatBytes(metrics.pieceLength) : "—"}</strong>
+          <strong>{metrics.pieceLength ? formatBytes(metrics.pieceLength) : "N/A"}</strong>
         </span>
         <span>
           <small>Wire bytes</small>

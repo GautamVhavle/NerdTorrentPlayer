@@ -48,7 +48,7 @@ export const SINTEL_DEMO_MAGNET = [
 
 export const SINTEL_DEMO_SOURCE: TorrentSource = {
   value: SINTEL_DEMO_MAGNET,
-  label: "Sintel — official WebTorrent demo",
+  label: "Sintel - official WebTorrent demo",
 };
 
 function rawErrorMessage(error: unknown): string {

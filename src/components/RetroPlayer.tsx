@@ -459,7 +459,7 @@ function PlayerStatusStrip({
       <span>{peers} peers</span>
       <span>{formatSpeed(downloadSpeed)}</span>
       <span ref={bufferStatusRef} aria-label="Buffer state unavailable">
-        BUFFER —
+        BUFFER -
       </span>
       <span ref={mediaStatusRef} className="status-strip-note">
         LOADING

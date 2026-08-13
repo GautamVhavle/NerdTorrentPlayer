@@ -40,7 +40,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     metadataBase: new URL(origin),
-    title: "NerdTorrentPlayer — Stream the Swarm",
+    title: "NerdTorrentPlayer - Stream the Swarm",
     description,
     applicationName: "NerdTorrentPlayer",
     manifest: "/manifest.webmanifest",
@@ -59,20 +59,20 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       url: origin,
       siteName: "NerdTorrentPlayer",
-      title: "NerdTorrentPlayer — Stream the Swarm",
+      title: "NerdTorrentPlayer - Stream the Swarm",
       description,
       images: [
         {
           url: origin + "/og.png",
           width: 1731,
           height: 909,
-          alt: "NerdTorrentPlayer — Stream the Swarm",
+          alt: "NerdTorrentPlayer - Stream the Swarm",
         },
       ],
     },
     twitter: {
       card: "summary_large_image",
-      title: "NerdTorrentPlayer — Stream the Swarm",
+      title: "NerdTorrentPlayer - Stream the Swarm",
       description,
       images: [origin + "/og.png"],
     },
