@@ -17,11 +17,12 @@
 	<a href="SECURITY.md">Security</a>
 </p>
 
-NerdTorrentPlayer is a responsive torrent media console for selecting files,
-streaming supported media early, managing captions, continuing where you left
-off, and understanding exactly what the swarm is doing. It works as a hosted
-browser app for WebTorrent-compatible sources, with an optional private local
-bridge that unlocks conventional BitTorrent swarms and FFmpeg conversion.
+NerdTorrentPlayer is a responsive local-first torrent media console for selecting
+files, streaming supported media early, managing captions, continuing where you
+left off, and understanding exactly what the swarm is doing. The hosted Vercel
+site explains the product and installation path; cloning the project and running
+it locally opens the full player with a private loopback bridge for conventional
+BitTorrent swarms and FFmpeg conversion.
 
 ## Why It Exists
 
@@ -81,19 +82,20 @@ npm run bridge
 This distinction matters. WebTorrent in a browser is **WebRTC-only**; it cannot
 open BitTorrent TCP/uTP connections or UDP tracker connections.
 
-| Capability | Hosted app / Vercel | Local app with bridge |
+| Capability | Hosted site / Vercel | Local player with bridge |
 | --- | --- | --- |
-| WebRTC peers and WSS trackers | Yes | Yes |
-| HTTP web seeds | Yes | Yes |
+| Product overview and installation guide | Yes | In README |
+| Interactive torrent player | No | Yes |
+| WebRTC peers and WSS trackers | No | Yes |
 | Conventional TCP peers | No | Yes |
 | UDP/HTTP trackers and DHT | No | Yes |
 | MKV/HEVC conversion via FFmpeg | No | Yes |
 | Browser-safe HLS transcode | No | Yes |
-| Broad conventional-torrent support | No | Yes |
 
-The [live Vercel app](https://nerdtorrentplayer.vercel.app) is a frontend-only
-deployment. A pasted torrent works there only when a WebRTC/WebTorrent-capable
-peer, WSS tracker route with web peers, or an HTTP web seed is available.
+The [live Vercel site](https://nerdtorrentplayer.vercel.app) is an SEO-friendly
+product and installation page. It deliberately does not present a hosted player,
+because a browser-only deployment cannot provide reliable access to conventional
+BitTorrent swarms or a persistent FFmpeg conversion service.
 
 The local bridge is intentionally not public infrastructure. It binds only to
 loopback, validates host and origin boundaries, and issues random session
@@ -152,10 +154,10 @@ npm run build:vercel
 npx vercel --prod
 ```
 
-Vercel hosts the frontend. It does not host a persistent hybrid torrent client,
-UDP sockets, FFmpeg, or an HLS segment server. Hosting those capabilities for
-arbitrary conventional torrents requires a separate always-on Node/container or
-desktop runtime, along with appropriate bandwidth, abuse, and legal controls.
+Vercel hosts the static-facing product and installation experience. The
+`build:vercel` script explicitly selects landing mode; it does not expose the
+interactive player. Vercel does not host a persistent hybrid torrent client, UDP
+sockets, FFmpeg, or an HLS segment server. Full playback remains local by design.
 
 ## Privacy And Security
 

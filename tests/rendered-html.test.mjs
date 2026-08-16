@@ -112,6 +112,9 @@ test("keeps WebTorrent browser-only and ships the optimized UI dependencies", as
   assert.doesNotMatch(appSource, /<output>Discovery active<\/output>/);
   assert.doesNotMatch(appSource, /className="trace-status">streaming/);
   assert.match(page, /TorrentPlayerApp/);
+  assert.match(page, /LandingPage/);
+  assert.match(page, /process\.env\.APP_MODE === "landing"/);
+  assert.match(packageJson, /APP_MODE=landing next build/);
   assert.match(packageJson, /"motion"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(page, /_sites-preview|codex-preview/);

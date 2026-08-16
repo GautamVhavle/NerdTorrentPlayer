@@ -1,7 +1,7 @@
 {
   "name": "NerdTorrentPlayer",
   "short_name": "NerdTorrent",
-  "description": "A fast-start WebTorrent media console with a private on-device library and deep swarm telemetry.",
+  "description": "A local-first torrent streaming player with native swarm support, subtitles, resume history, and live telemetry.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#05070a",
